@@ -272,6 +272,10 @@ function applySerializedStateFromRoom(remoteState) {
   state.largestArmyOwner = remoteState.largestArmyOwner ?? null;
   state.winner = remoteState.winner ?? null;
   state.tradeLock = !!remoteState.tradeLock;
+
+  if (state.phase === "setup" && !state.pendingAction) {
+    state.pendingAction = { type: "buildSettlement", free: true, source: "setup" };
+  }
 }
 
 function getOrderedRoomPlayers(roomData) {
@@ -279,7 +283,11 @@ function getOrderedRoomPlayers(roomData) {
 }
 
 function getCurrentTurnUid() {
-  return currentRoomData?.meta?.seatUidOrder?.[state.currentPlayer] || null;
+  const directUid = currentRoomData?.meta?.seatUidOrder?.[state.currentPlayer];
+  if (directUid) return directUid;
+
+  const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
+  return orderedPlayers[state.currentPlayer]?.uid || null;
 }
 
 function isMyTurnOnline() {
@@ -598,18 +606,41 @@ async function startOnlineMatch() {
     return;
   }
 
-  const orderedPlayers = getOrderedRoomPlayers(currentRoomData).filter(player => player.connected);
+  const orderedPlayers = getOrderedRoomPlayers(currentRoomData)
+    .filter(player => player.connected)
+    .sort((a, b) => (a.seat ?? 99) - (b.seat ?? 99));
 
   if (orderedPlayers.length < 2) {
     alertMsg("You need at least 2 connected players to start.");
     return;
   }
 
+  const seatUidOrder = orderedPlayers.map(player => player.uid);
+
   startNewGame({
     players: orderedPlayers.map(player => ({ name: player.name }))
   });
 
-  const seatUidOrder = orderedPlayers.map(player => player.uid);
+  state.startPlayer = 0;
+  state.currentPlayer = 0;
+  state.setupRound = 1;
+  state.setupDirection = 1;
+  state.setupOrderIndex = 0;
+  state.pendingAction = { type: "buildSettlement", free: true, source: "setup" };
+  state.phase = "setup";
+  setStatus(`${playerName(state.currentPlayer)}: place your first settlement.`);
+
+  currentRoomData = {
+    ...(currentRoomData || {}),
+    meta: {
+      ...(currentRoomData?.meta || {}),
+      status: "playing",
+      updatedAt: Date.now(),
+      seatUidOrder
+    }
+  };
+
+  render();
 
   await update(getRoomRef(currentRoomCode), {
     "meta/status": "playing",
@@ -617,15 +648,19 @@ async function startOnlineMatch() {
     "meta/seatUidOrder": seatUidOrder,
     gameState: serializeStateForRoom()
   });
+
+  await syncRoomStateNow(true);
+  render();
 }
 
-async function syncRoomStateNow() {
+async function syncRoomStateNow(force = false) {
   if (suppressRoomSync) return;
   if (!currentRoomCode) return;
   if (!currentRoomData) return;
   if (currentRoomData.meta?.status !== "playing") return;
   if (!firebaseUser) return;
-  if (!isMyTurnOnline()) return;
+
+  if (!force && !isMyTurnOnline()) return;
 
   await update(getRoomRef(currentRoomCode), {
     "meta/updatedAt": Date.now(),
@@ -633,17 +668,18 @@ async function syncRoomStateNow() {
   });
 }
 
-function scheduleRoomStateSync() {
+function scheduleRoomStateSync(force = false) {
   if (suppressRoomSync) return;
   if (!currentRoomCode) return;
   if (!currentRoomData) return;
   if (currentRoomData.meta?.status !== "playing") return;
   if (!firebaseUser) return;
-  if (!isMyTurnOnline()) return;
+
+  if (!force && !isMyTurnOnline()) return;
 
   clearTimeout(roomSyncTimer);
   roomSyncTimer = setTimeout(() => {
-    syncRoomStateNow().catch((error) => {
+    syncRoomStateNow(force).catch((error) => {
       console.error("Failed to sync room state:", error);
     });
   }, 60);
@@ -1179,7 +1215,7 @@ function renderBoard() {
     }
 
     const hit = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-    hit.setAttribute("cx", v.x); hit.setAttribute("cy", v.y); hit.setAttribute("r", 12);
+    hit.setAttribute("cx", v.x); hit.setAttribute("cy", v.y); hit.setAttribute("r", 18);
     let vertexClass = "vertex";
     if (canInteractOnline && state.pendingAction?.type === "buildSettlement") {
       vertexClass += validSettlementSpot(v.id, state.currentPlayer, state.phase === "setup") ? " vertex-active" : " vertex-disabled";
@@ -1205,16 +1241,25 @@ function renderBoard() {
 
 function renderSidebar() {
   const p = currentPlayer();
-  els.phaseLabel.textContent = state.phase === "setup" ? `Setup Round ${state.setupRound}` : capitalize(state.phase);
-  els.turnLabel.textContent = state.gameStarted ? `• ${p.name}` : "";
-  els.diceResult.textContent = state.dice ? `${state.dice[0]} + ${state.dice[1]} = ${state.dice[0] + state.dice[1]}` : "-";
+
+  els.phaseLabel.textContent =
+    state.phase === "setup" ? `Setup Round ${state.setupRound}` : capitalize(state.phase);
 
   if (!p) {
+    els.turnLabel.textContent = "";
+    els.diceResult.textContent = state.dice
+      ? `${state.dice[0]} + ${state.dice[1]} = ${state.dice[0] + state.dice[1]}`
+      : "-";
     els.currentPlayerCard.innerHTML = "";
     els.vpSummary.innerHTML = "";
     els.devSummary.innerHTML = "";
     return;
   }
+
+  els.turnLabel.textContent = state.gameStarted ? `• ${p.name}` : "";
+  els.diceResult.textContent = state.dice
+    ? `${state.dice[0]} + ${state.dice[1]} = ${state.dice[0] + state.dice[1]}`
+    : "-";
 
   els.currentPlayerCard.innerHTML = `
     <div class="player-card">
@@ -1308,9 +1353,18 @@ function attemptBuildSettlement(vertexId) {
   const player = currentPlayer();
   const free = !!state.pendingAction?.free;
   const setup = state.phase === "setup";
+
+  if (currentRoomCode && !isMyTurnOnline()) {
+    return alertMsg("It is not your turn.");
+  }
+
   if (player.settlementsLeft <= 0) return alertMsg("No settlements left.");
-  if (!validSettlementSpot(vertexId, player.id, setup)) return alertMsg("Settlement cannot be built there. Check the distance rule and connection rule.");
-  if (!free && !canAfford(player, BUILD_COSTS.settlement)) return alertMsg("Not enough resources for a settlement.");
+  if (!validSettlementSpot(vertexId, player.id, setup)) {
+    return alertMsg("Settlement cannot be built there. Check the distance rule and connection rule.");
+  }
+  if (!free && !canAfford(player, BUILD_COSTS.settlement)) {
+    return alertMsg("Not enough resources for a settlement.");
+  }
 
   if (!free) payCost(player, BUILD_COSTS.settlement);
   placeSettlement(player.id, vertexId);
@@ -1322,7 +1376,14 @@ function attemptBuildSettlement(vertexId) {
     state.pendingAction = null;
     setStatus(`${player.name} built a settlement.`);
   }
+
   finishAfterAction();
+
+  if (currentRoomCode) {
+    syncRoomStateNow(true).catch((error) => {
+      console.error("Failed to sync settlement action:", error);
+    });
+  }
 }
 
 function placeSettlement(playerId, vertexId) {
@@ -1338,9 +1399,17 @@ function placeSettlement(playerId, vertexId) {
 function attemptBuildCity(vertexId) {
   const player = currentPlayer();
   const vertex = state.board.vertices[vertexId];
-  if (!vertex.building || vertex.building.owner !== player.id || vertex.building.type !== "settlement") return alertMsg("You can only upgrade your own settlement to a city.");
+
+  if (currentRoomCode && !isMyTurnOnline()) {
+    return alertMsg("It is not your turn.");
+  }
+
+  if (!vertex.building || vertex.building.owner !== player.id || vertex.building.type !== "settlement") {
+    return alertMsg("You can only upgrade your own settlement to a city.");
+  }
   if (player.citiesLeft <= 0) return alertMsg("No cities left.");
   if (!canAfford(player, BUILD_COSTS.city)) return alertMsg("Not enough resources for a city.");
+
   payCost(player, BUILD_COSTS.city);
   vertex.building.type = "city";
   player.cities.push(vertexId);
@@ -1349,7 +1418,14 @@ function attemptBuildCity(vertexId) {
   player.settlementsLeft++;
   addLog(`${player.name} upgraded a settlement to a city.`);
   state.pendingAction = null;
+
   finishAfterAction();
+
+  if (currentRoomCode) {
+    syncRoomStateNow(true).catch((error) => {
+      console.error("Failed to sync city action:", error);
+    });
+  }
 }
 
 function validRoadSpot(edgeId, playerId) {
@@ -1369,10 +1445,21 @@ function validRoadSpot(edgeId, playerId) {
 function attemptBuildRoad(edgeId) {
   const player = currentPlayer();
   const free = !!state.pendingAction?.free;
+
+  if (currentRoomCode && !isMyTurnOnline()) {
+    return alertMsg("It is not your turn.");
+  }
+
   if (player.roadsLeft <= 0) return alertMsg("No roads left.");
-  if (!validRoadSpot(edgeId, player.id)) return alertMsg("Road must connect to your network or the setup settlement.");
-  if (!free && !canAfford(player, BUILD_COSTS.road)) return alertMsg("Not enough resources for a road.");
+  if (!validRoadSpot(edgeId, player.id)) {
+    return alertMsg("Road must connect to your network or the setup settlement.");
+  }
+  if (!free && !canAfford(player, BUILD_COSTS.road)) {
+    return alertMsg("Not enough resources for a road.");
+  }
+
   if (!free) payCost(player, BUILD_COSTS.road);
+
   const edge = state.board.edges[edgeId];
   edge.owner = player.id;
   player.roads.push(edgeId);
@@ -1392,8 +1479,15 @@ function attemptBuildRoad(edgeId) {
   } else {
     state.pendingAction = null;
   }
+
   updateSpecialAwards();
   finishAfterAction();
+
+  if (currentRoomCode) {
+    syncRoomStateNow(true).catch((error) => {
+      console.error("Failed to sync road action:", error);
+    });
+  }
 }
 
 function handleSetupAdvance() {
@@ -1458,19 +1552,32 @@ function finishAfterAction() {
 }
 
 function attemptRollDice() {
+  if (currentRoomCode && !isMyTurnOnline()) {
+    return alertMsg("It is not your turn.");
+  }
+
   if (state.phase !== "play" || state.diceRolled || state.pendingAction) return;
+
   const d1 = randInt(1,6), d2 = randInt(1,6);
   state.dice = [d1,d2];
   state.diceRolled = true;
   const total = d1 + d2;
   addLog(`${currentPlayer().name} rolled ${total}.`);
+
   if (total === 7) {
     handleSevenRolled();
   } else {
     distributeResources(total);
     setStatus(`${currentPlayer().name}: you may trade, build, play 1 development card, or end your turn.`);
   }
+
   render();
+
+  if (currentRoomCode) {
+    syncRoomStateNow(true).catch((error) => {
+      console.error("Failed to sync dice roll:", error);
+    });
+  }
 }
 
 function distributeResources(total) {
@@ -1885,18 +1992,31 @@ function openTransferModal() {
 }
 
 function endTurn() {
+  if (currentRoomCode && !isMyTurnOnline()) {
+    return alertMsg("It is not your turn.");
+  }
+
   if (state.phase !== "play" || !state.diceRolled || state.pendingAction || state.tradeLock) return;
+
   const p = currentPlayer();
   p.devCards.push(...p.newDevCards);
   p.newDevCards = [];
   p.playedDevThisTurn = false;
+
   state.currentPlayer = (state.currentPlayer + 1) % state.players.length;
   state.diceRolled = false;
   state.dice = null;
   state.pendingAction = null;
+
   setStatus(`${currentPlayer().name}: roll the dice.`);
   addLog(`It is now ${currentPlayer().name}'s turn.`);
   render();
+
+  if (currentRoomCode) {
+    syncRoomStateNow(true).catch((error) => {
+      console.error("Failed to sync end turn:", error);
+    });
+  }
 }
 
 function openDiscardModal(playerId, amount, done) {
@@ -2114,6 +2234,5 @@ function bindEvents() {
 
 
 bindEvents();
-openHelp();
 render();
 bootstrapFirebase();
