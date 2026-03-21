@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cata Island Traders</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div>
+        <h1>Cata Island Traders</h1>
+        <p class="subtitle">Local hot-seat board game inspired by classic island trading rules</p>
+      </div>
+      <div class="top-actions">
+        <button id="newGameBtn">New Game</button>
+        <button id="helpBtn">Rules & Controls</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="board-wrap card">
+        <div class="board-header">
+          <div>
+            <strong id="phaseLabel">Setup</strong>
+            <span id="turnLabel"></span>
+          </div>
+          <div class="dice-box">
+            <button id="rollBtn">Roll Dice</button>
+            <div id="diceResult">-</div>
+          </div>
+        </div>
+        <div id="boardContainer">
+          <svg id="board" viewBox="0 0 1000 820" aria-label="Game board"></svg>
+        </div>
+        <div class="board-footer">
+          <div id="statusMessage">Start a new game to begin.</div>
+          <div class="footer-actions">
+            <button id="finishActionBtn" class="secondary">Finish Current Action</button>
+            <button id="endTurnBtn">End Turn</button>
+          </div>
+        </div>
+      </section>
+
+      <aside class="sidebar">
+        <section class="card panel current-player-panel">
+          <h2>Current Player</h2>
+          <div id="currentPlayerCard"></div>
+          <div class="mini-grid" id="vpSummary"></div>
+        </section>
+
+        <section class="card panel">
+          <h2>Build</h2>
+          <div class="action-grid">
+            <button data-action="buildRoad">Road</button>
+            <button data-action="buildSettlement">Settlement</button>
+            <button data-action="buildCity">City</button>
+            <button data-action="buyDev">Dev Card</button>
+            <button data-action="playDev">Play Dev Card</button>
+            <button data-action="moveRobber">Move Robber</button>
+          </div>
+        </section>
+
+        <section class="card panel">
+          <h2>Trade</h2>
+          <div class="action-grid">
+            <button data-action="bankTrade">Bank / Port Trade</button>
+            <button data-action="playerTrade">Player Trade</button>
+            <button data-action="transfer">Manual Transfer</button>
+          </div>
+          <p class="small-note">Manual transfer exists to help resolve edge cases in local hot-seat play.</p>
+        </section>
+
+        <section class="card panel">
+          <h2>Development Cards</h2>
+          <div id="devSummary"></div>
+        </section>
+
+        <section class="card panel">
+          <h2>Log</h2>
+          <div id="log"></div>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <div id="modalRoot"></div>
+
+  <template id="modalTemplate">
+    <div class="modal-backdrop">
+      <div class="modal card">
+        <div class="modal-header">
+          <h3 class="modal-title"></h3>
+          <button class="close-modal">×</button>
+        </div>
+        <div class="modal-body"></div>
+        <div class="modal-actions"></div>
+      </div>
+    </div>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>
