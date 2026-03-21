@@ -350,8 +350,12 @@ function renderBoard() {
     const hit = document.createElementNS("http://www.w3.org/2000/svg", "line");
     hit.setAttribute("x1", a.x); hit.setAttribute("y1", a.y);
     hit.setAttribute("x2", b.x); hit.setAttribute("y2", b.y);
-    hit.setAttribute("class", "edge-hit");
-    if (state.pendingAction?.type === "buildRoad") hit.addEventListener("click", () => attemptBuildRoad(edge.id));
+    let edgeClass = "edge-hit";
+    if (state.pendingAction?.type === "buildRoad") {
+      edgeClass += validRoadSpot(edge.id, state.currentPlayer) ? " edge-hit-active" : " edge-hit-disabled";
+      hit.addEventListener("click", () => attemptBuildRoad(edge.id));
+    }
+    hit.setAttribute("class", edgeClass);
     svg.appendChild(hit);
 
     if (edge.owner !== null) {
@@ -378,10 +382,16 @@ function renderBoard() {
 
     const hit = document.createElementNS("http://www.w3.org/2000/svg", "circle");
     hit.setAttribute("cx", v.x); hit.setAttribute("cy", v.y); hit.setAttribute("r", 12);
-    hit.setAttribute("class", "vertex");
-    if (["buildSettlement","buildCity"].includes(state.pendingAction?.type)) {
-      hit.addEventListener("click", () => state.pendingAction.type === "buildSettlement" ? attemptBuildSettlement(v.id) : attemptBuildCity(v.id));
+    let vertexClass = "vertex";
+    if (state.pendingAction?.type === "buildSettlement") {
+      vertexClass += validSettlementSpot(v.id, state.currentPlayer, state.phase === "setup") ? " vertex-active" : " vertex-disabled";
+      hit.addEventListener("click", () => attemptBuildSettlement(v.id));
+    } else if (state.pendingAction?.type === "buildCity") {
+      const canUpgrade = !!(v.building && v.building.owner === state.currentPlayer && v.building.type === "settlement");
+      vertexClass += canUpgrade ? " vertex-active" : " vertex-disabled";
+      hit.addEventListener("click", () => attemptBuildCity(v.id));
     }
+    hit.setAttribute("class", vertexClass);
     svg.appendChild(hit);
 
     if (v.building) {
