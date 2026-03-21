@@ -294,9 +294,13 @@ function getCurrentTurnUid() {
 function getOnlineCurrentTurnName() {
   if (!currentRoomData) return "-";
 
-  const uid = currentRoomData?.meta?.seatUidOrder?.[state.currentPlayer];
-  if (uid && currentRoomData.players?.[uid]?.name) {
-    return currentRoomData.players[uid].name;
+  const uidFromSeat = currentRoomData?.meta?.seatUidOrder?.[state.currentPlayer];
+  if (uidFromSeat && currentRoomData.players?.[uidFromSeat]?.name) {
+    return currentRoomData.players[uidFromSeat].name;
+  }
+
+  if (state.players?.[state.currentPlayer]?.name) {
+    return state.players[state.currentPlayer].name;
   }
 
   const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
@@ -319,7 +323,7 @@ function updateRoomPanel() {
   els.leaveRoomBtn.disabled = !currentRoomCode;
 
   if (els.onlineCurrentTurnDisplay) {
-    if (currentRoomData?.meta?.status === "playing" && state.gameStarted) {
+    if (currentRoomData?.meta?.status === "playing") {
       els.onlineCurrentTurnDisplay.textContent = getOnlineCurrentTurnName();
     } else {
       els.onlineCurrentTurnDisplay.textContent = "-";
@@ -369,10 +373,7 @@ function updateRoomPanel() {
     const isYou = firebaseUser && player.uid === firebaseUser.uid;
     const connectionClass = player.connected ? "connected" : "disconnected";
     const connectionText = player.connected ? "Connected" : "Offline";
-    const isCurrentTurn =
-      currentRoomData?.meta?.status === "playing" &&
-      state.gameStarted &&
-      index === state.currentPlayer;
+    const isCurrentTurn = currentRoomData?.meta?.status === "playing" && index === state.currentPlayer;
 
     return `
       <div class="online-player-row">
@@ -381,7 +382,7 @@ function updateRoomPanel() {
           <div>
             <strong>${escapeHtml(player.name)}</strong>
             ${isYou ? `<span class="online-player-you">(You)</span>` : ""}
-            ${isCurrentTurn ? `<span class="online-player-you"> • TURN</span>` : ""}
+            ${isCurrentTurn ? `<span class="online-player-you">• TURN</span>` : ""}
           </div>
           <div class="online-player-tag">Seat ${player.seat + 1}</div>
         </div>
@@ -435,16 +436,15 @@ async function subscribeToRoom(roomCode) {
     }
 
     currentRoomData = roomData;
-    updateRoomPanel();
 
     if (roomData.gameState) {
       suppressRoomSync = true;
       applySerializedStateFromRoom(roomData.gameState);
-      render();
       suppressRoomSync = false;
-      updateRoomPanel();
     }
 
+    updateRoomPanel();
+    render();
     setLobbyStatusMessage(roomData);
   });
 
