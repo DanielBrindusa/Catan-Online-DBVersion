@@ -283,38 +283,34 @@ function getOrderedRoomPlayers(roomData) {
   return Object.values(roomData?.players || {}).sort((a, b) => (a.seat ?? 99) - (b.seat ?? 99));
 }
 
-function getRemotePlayers() {
-  return currentRoomData?.gameState?.players || [];
-}
-
-function getRemoteCurrentPlayerIndex() {
+function getEffectiveCurrentPlayerIndex() {
   if (typeof currentRoomData?.gameState?.currentPlayer === "number") {
     return currentRoomData.gameState.currentPlayer;
   }
   return state.currentPlayer ?? 0;
 }
 
-function getRemoteCurrentPlayerName() {
-  const idx = getRemoteCurrentPlayerIndex();
-  const remotePlayers = getRemotePlayers();
-  if (remotePlayers[idx]?.name) return remotePlayers[idx].name;
+function getCurrentTurnUid() {
+  const currentPlayerIndex = getEffectiveCurrentPlayerIndex();
+  const directUid = currentRoomData?.meta?.seatUidOrder?.[currentPlayerIndex];
+  if (directUid) return directUid;
 
-  const directUid = currentRoomData?.meta?.seatUidOrder?.[idx];
+  const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
+  return orderedPlayers[currentPlayerIndex]?.uid || null;
+}
+
+function getOnlineCurrentTurnName() {
+  const currentPlayerIndex = getEffectiveCurrentPlayerIndex();
+  const directUid = currentRoomData?.meta?.seatUidOrder?.[currentPlayerIndex];
   if (directUid && currentRoomData?.players?.[directUid]?.name) {
     return currentRoomData.players[directUid].name;
   }
 
-  const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
-  return orderedPlayers[idx]?.name || "-";
-}
+  if (currentRoomData?.gameState?.players?.[currentPlayerIndex]?.name) {
+    return currentRoomData.gameState.players[currentPlayerIndex].name;
+  }
 
-function getCurrentTurnUid() {
-  const turnIndex = getRemoteCurrentPlayerIndex();
-  const directUid = currentRoomData?.meta?.seatUidOrder?.[turnIndex];
-  if (directUid) return directUid;
-
-  const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
-  return orderedPlayers[turnIndex]?.uid || null;
+  return state.players[currentPlayerIndex]?.name || "-";
 }
 
 function isMyTurnOnline() {
@@ -332,16 +328,13 @@ function updateRoomPanel() {
   els.roomStatusDisplay.textContent = currentRoomData?.meta?.status || "Offline";
   els.leaveRoomBtn.disabled = !currentRoomCode;
 
-  if (els.onlineCurrentTurnDisplay) {
-    if (currentRoomData?.meta?.status === "playing") {
-      els.onlineCurrentTurnDisplay.textContent = getRemoteCurrentPlayerName();
-    } else {
-      els.onlineCurrentTurnDisplay.textContent = "-";
-    }
-  }
-
   const inOnlineRoom = !!currentRoomCode;
   const roomStatus = currentRoomData?.meta?.status || "Offline";
+  const currentTurnName = currentRoomData?.meta?.status === "playing" ? getOnlineCurrentTurnName() : "-";
+
+  if (els.onlineCurrentTurnDisplay) {
+    els.onlineCurrentTurnDisplay.textContent = currentTurnName;
+  }
 
   els.newGameBtn.disabled = inOnlineRoom;
   els.createRoomBtn.disabled = inOnlineRoom;
@@ -373,18 +366,18 @@ function updateRoomPanel() {
   }
 
   const players = getOrderedRoomPlayers(currentRoomData);
-  const currentTurnIndex = getRemoteCurrentPlayerIndex();
+  const currentTurnUid = currentRoomData?.meta?.status === "playing" ? getCurrentTurnUid() : null;
 
   if (!players.length) {
     els.onlinePlayersList.innerHTML = `<div class="small-note">No players connected.</div>`;
     return;
   }
 
-  els.onlinePlayersList.innerHTML = players.map((player, index) => {
+  els.onlinePlayersList.innerHTML = players.map(player => {
     const isYou = firebaseUser && player.uid === firebaseUser.uid;
     const connectionClass = player.connected ? "connected" : "disconnected";
     const connectionText = player.connected ? "Connected" : "Offline";
-    const isCurrentTurn = currentRoomData?.meta?.status === "playing" && index === currentTurnIndex;
+    const isCurrentTurn = currentTurnUid && player.uid === currentTurnUid;
 
     return `
       <div class="online-player-row">
@@ -411,12 +404,11 @@ function setLobbyStatusMessage(roomData) {
     return;
   }
 
-  if (roomData.meta?.status === "playing") {
-    const turnName = getRemoteCurrentPlayerName();
+  if (roomData.meta?.status === "playing" && state.gameStarted) {
     if (isMyTurnOnline()) {
-      setStatus(`${turnName}: it is your turn.`);
+      setStatus(`${playerName(state.currentPlayer)}: it is your turn.`);
     } else {
-      setStatus(`${turnName}: waiting for that player to act.`);
+      setStatus(`${playerName(state.currentPlayer)}: waiting for that player to act.`);
     }
   }
 }
@@ -1277,35 +1269,15 @@ function renderBoard() {
 }
 
 function renderSidebar() {
-  let p = currentPlayer();
-  let turnName = p?.name || "";
-
-  if ((!p || !turnName) && currentRoomCode && currentRoomData?.gameState) {
-    const remotePlayers = currentRoomData.gameState.players || [];
-    const remoteTurnIndex = typeof currentRoomData.gameState.currentPlayer === "number" ? currentRoomData.gameState.currentPlayer : 0;
-    p = remotePlayers[remoteTurnIndex] || p;
-    turnName = p?.name || getRemoteCurrentPlayerName();
-  }
+  const effectiveCurrentPlayerIndex = getEffectiveCurrentPlayerIndex();
+  const p = state.players[effectiveCurrentPlayerIndex] || currentPlayer();
 
   els.phaseLabel.textContent =
     state.phase === "setup" ? `Setup Round ${state.setupRound}` : capitalize(state.phase);
 
-  if (!p && currentRoomCode && currentRoomData?.meta?.status === "playing") {
-    const fallbackTurnName = getRemoteCurrentPlayerName();
-    els.turnLabel.textContent = fallbackTurnName !== "-" ? `• ${fallbackTurnName}` : "";
-    els.diceResult.textContent = state.dice
-      ? `${state.dice[0]} + ${state.dice[1]} = ${state.dice[0] + state.dice[1]}`
-      : "-";
-    els.currentPlayerCard.innerHTML = fallbackTurnName !== "-"
-      ? `<div class="player-card"><div><div><strong>${escapeHtml(fallbackTurnName)}</strong></div><div class="cost-row"><span class="badge">Online turn from live room</span></div></div></div>`
-      : "";
-    els.vpSummary.innerHTML = "";
-    els.devSummary.innerHTML = "";
-    return;
-  }
-
   if (!p) {
-    els.turnLabel.textContent = "";
+    const fallbackTurnName = currentRoomCode ? getOnlineCurrentTurnName() : "";
+    els.turnLabel.textContent = state.gameStarted && fallbackTurnName ? `• ${fallbackTurnName}` : "";
     els.diceResult.textContent = state.dice
       ? `${state.dice[0]} + ${state.dice[1]} = ${state.dice[0] + state.dice[1]}`
       : "-";
@@ -1315,41 +1287,24 @@ function renderSidebar() {
     return;
   }
 
-  els.turnLabel.textContent = (state.gameStarted || currentRoomCode) ? `• ${turnName || p.name}` : "";
+  els.turnLabel.textContent = state.gameStarted ? `• ${p.name}` : "";
   els.diceResult.textContent = state.dice
     ? `${state.dice[0]} + ${state.dice[1]} = ${state.dice[0] + state.dice[1]}`
     : "-";
 
-  if (currentRoomCode) {
-    els.currentPlayerCard.innerHTML = `
-      <div class="player-card">
-        <div class="player-dot" style="background:${p.color || "#64748b"}"></div>
-        <div>
-          <div><strong>${escapeHtml(turnName || p.name)}</strong></div>
-          <div class="cost-row">
-            <span class="badge">Roads left: ${p.roadsLeft ?? "-"}</span>
-            <span class="badge">Settlements left: ${p.settlementsLeft ?? "-"}</span>
-            <span class="badge">Cities left: ${p.citiesLeft ?? "-"}</span>
-          </div>
+  els.currentPlayerCard.innerHTML = `
+    <div class="player-card">
+      <div class="player-dot" style="background:${p.color}"></div>
+      <div>
+        <div><strong>${escapeHtml(p.name)}</strong></div>
+        ${currentRoomCode ? "" : `<div class="resource-row">${RESOURCES.map(r => `<span class="badge">${capitalize(r)}: ${p.resources[r]}</span>`).join("")}</div>`}
+        <div class="cost-row">
+          <span class="badge">Roads left: ${p.roadsLeft}</span>
+          <span class="badge">Settlements left: ${p.settlementsLeft}</span>
+          <span class="badge">Cities left: ${p.citiesLeft}</span>
         </div>
-      </div>`;
-  } else {
-    els.currentPlayerCard.innerHTML = `
-      <div class="player-card">
-        <div class="player-dot" style="background:${p.color}"></div>
-        <div>
-          <div><strong>${escapeHtml(p.name)}</strong></div>
-          <div class="resource-row">
-            ${RESOURCES.map(r => `<span class="badge">${capitalize(r)}: ${p.resources[r]}</span>`).join("")}
-          </div>
-          <div class="cost-row">
-            <span class="badge">Roads left: ${p.roadsLeft}</span>
-            <span class="badge">Settlements left: ${p.settlementsLeft}</span>
-            <span class="badge">Cities left: ${p.citiesLeft}</span>
-          </div>
-        </div>
-      </div>`;
-  }
+      </div>
+    </div>`;
 
   const stats = state.players.map((pl, idx) => {
     const vps = computeVictoryPoints(idx);
