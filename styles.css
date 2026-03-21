@@ -221,7 +221,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 }
 .hex-token.red { fill: #fee2e2; stroke: #ef4444; }
 .vertex {
-  fill: rgba(255,255,255,0.001);
+  fill: rgba(255,255,255,0.03);
   cursor: pointer;
   pointer-events: all;
 }
@@ -236,8 +236,8 @@ button:disabled { opacity: .5; cursor: not-allowed; }
   stroke-width: 1.5;
 }
 .edge-hit {
-  stroke: rgba(255,255,255,0.001);
-  stroke-width: 20;
+  stroke: rgba(255,255,255,0.05);
+  stroke-width: 30;
   cursor: pointer;
   pointer-events: stroke;
 }
