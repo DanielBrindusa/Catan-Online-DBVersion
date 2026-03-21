@@ -39,6 +39,20 @@ async function initFirebaseAuth() {
 async function bootstrapFirebase() {
   try {
     await initFirebaseAuth();
+    loadNicknameFromStorage();
+    updateRoomPanel();
+
+    const savedRoomCode = localStorage.getItem("catanCurrentRoomCode");
+    if (savedRoomCode) {
+      const roomSnapshot = await get(getRoomRef(savedRoomCode));
+      if (roomSnapshot.exists() && roomSnapshot.val()?.players?.[auth.currentUser.uid]) {
+        await subscribeToRoom(savedRoomCode);
+        await markPresenceConnected(savedRoomCode);
+      } else {
+        localStorage.removeItem("catanCurrentRoomCode");
+      }
+    }
+
     console.log("Firebase is ready");
   } catch (error) {
     console.error("Firebase initialization failed:", error);
@@ -1976,8 +1990,18 @@ function openModal({ title, body, actions = [], onRender, closeDisabled = false 
 function closeModal() { els.modalRoot.innerHTML = ""; }
 
 function bindEvents() {
+  els.rollBtn.addEventListener("click", attemptRollDice);
+  els.endTurnBtn.addEventListener("click", endTurn);
+  els.newGameBtn.addEventListener("click", openNewGameModal);
+  els.helpBtn.addEventListener("click", openHelp);
 
-    els.createRoomBtn.addEventListener("click", createRoom);
+  els.finishActionBtn.addEventListener("click", () => {
+    state.pendingAction = null;
+    setStatus("Action cleared.");
+    render();
+  });
+
+  els.createRoomBtn.addEventListener("click", createRoom);
   els.joinRoomBtn.addEventListener("click", joinRoom);
   els.leaveRoomBtn.addEventListener("click", leaveRoom);
   els.startOnlineMatchBtn.addEventListener("click", startOnlineMatch);
@@ -1987,28 +2011,29 @@ function bindEvents() {
   });
 
   els.joinRoomCodeInput.addEventListener("input", () => {
-    els.joinRoomCodeInput.value = els.joinRoomCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    els.joinRoomCodeInput.value = els.joinRoomCodeInput.value
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "");
   });
 
-
-
-  els.rollBtn.addEventListener("click", attemptRollDice);
-  els.endTurnBtn.addEventListener("click", endTurn);
-  els.newGameBtn.addEventListener("click", openNewGameModal);
-  els.helpBtn.addEventListener("click", openHelp);
-  els.finishActionBtn.addEventListener("click", () => {
-    state.pendingAction = null;
-    setStatus("Action cleared.");
-    render();
-  });
   document.querySelectorAll("[data-action]").forEach(btn => {
     btn.addEventListener("click", () => {
       if (!state.gameStarted || state.winner) return;
       const action = btn.dataset.action;
       const player = currentPlayer();
-      if (state.phase !== "play" && action !== "moveRobber") return alertMsg("That action is not available during setup.");
-      if (["buildRoad","buildSettlement","buildCity","buyDev","playDev","bankTrade","playerTrade"].includes(action) && !state.diceRolled) return alertMsg("Roll the dice first.");
-      if (state.pendingAction && !["moveRobber"].includes(action)) return alertMsg("Finish your current action first.");
+
+      if (state.phase !== "play" && action !== "moveRobber") {
+        return alertMsg("That action is not available during setup.");
+      }
+
+      if (["buildRoad","buildSettlement","buildCity","buyDev","playDev","bankTrade","playerTrade"].includes(action) && !state.diceRolled) {
+        return alertMsg("Roll the dice first.");
+      }
+
+      if (state.pendingAction && !["moveRobber"].includes(action)) {
+        return alertMsg("Finish your current action first.");
+      }
+
       switch (action) {
         case "buildRoad":
           state.pendingAction = { type: "buildRoad" };
@@ -2022,44 +2047,30 @@ function bindEvents() {
           state.pendingAction = { type: "buildCity" };
           setStatus(`${player.name}: click one of your settlements to upgrade it.`);
           break;
-        case "buyDev": buyDevelopmentCard(); break;
-        case "playDev": openPlayDevCardModal(); break;
+        case "buyDev":
+          buyDevelopmentCard();
+          break;
+        case "playDev":
+          openPlayDevCardModal();
+          break;
         case "moveRobber":
           state.pendingAction = { type: "moveRobber", free: true };
           setStatus(`${player.name}: click a hex to move the robber.`);
           break;
-        case "bankTrade": openBankTradeModal(); break;
-        case "playerTrade": openPlayerTradeModal(); break;
-        case "transfer": openTransferModal(); break;
+        case "bankTrade":
+          openBankTradeModal();
+          break;
+        case "playerTrade":
+          openPlayerTradeModal();
+          break;
+        case "transfer":
+          openTransferModal();
+          break;
       }
+
       render();
     });
   });
-}
-
-
-async function bootstrapFirebase() {
-  try {
-    await initFirebaseAuth();
-    loadNicknameFromStorage();
-    updateRoomPanel();
-
-    const savedRoomCode = localStorage.getItem("catanCurrentRoomCode");
-    if (savedRoomCode) {
-      const roomSnapshot = await get(getRoomRef(savedRoomCode));
-      if (roomSnapshot.exists() && roomSnapshot.val()?.players?.[auth.currentUser.uid]) {
-        await subscribeToRoom(savedRoomCode);
-        await markPresenceConnected(savedRoomCode);
-      } else {
-        localStorage.removeItem("catanCurrentRoomCode");
-      }
-    }
-
-    console.log("Firebase is ready");
-  } catch (error) {
-    console.error("Firebase initialization failed:", error);
-    alert("Firebase failed to initialize. Open the browser console with F12 and check the error.");
-  }
 }
 
 
