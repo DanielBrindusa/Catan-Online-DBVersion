@@ -274,11 +274,7 @@ function applySerializedStateFromRoom(remoteState) {
   state.tradeLock = !!remoteState.tradeLock;
 
   if (state.phase === "setup" && !state.pendingAction) {
-    state.pendingAction = {
-      type: "buildSettlement",
-      free: true,
-      source: "setup"
-    };
+    state.pendingAction = { type: "buildSettlement", free: true, source: "setup" };
   }
 }
 
@@ -287,7 +283,11 @@ function getOrderedRoomPlayers(roomData) {
 }
 
 function getCurrentTurnUid() {
-  return currentRoomData?.meta?.seatUidOrder?.[state.currentPlayer] || null;
+  const directUid = currentRoomData?.meta?.seatUidOrder?.[state.currentPlayer];
+  if (directUid) return directUid;
+
+  const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
+  return orderedPlayers[state.currentPlayer]?.uid || null;
 }
 
 function isMyTurnOnline() {
@@ -606,45 +606,41 @@ async function startOnlineMatch() {
     return;
   }
 
-  const orderedPlayers = getOrderedRoomPlayers(currentRoomData).filter(player => player.connected);
+  const orderedPlayers = getOrderedRoomPlayers(currentRoomData)
+    .filter(player => player.connected)
+    .sort((a, b) => (a.seat ?? 99) - (b.seat ?? 99));
 
   if (orderedPlayers.length < 2) {
     alertMsg("You need at least 2 connected players to start.");
     return;
   }
 
-  // ensure players are in same order as firebase seats
-  const orderedPlayersSorted = orderedPlayers.sort((a,b)=>a.seat-b.seat);
+  const seatUidOrder = orderedPlayers.map(player => player.uid);
 
   startNewGame({
-    players: orderedPlayersSorted.map(player => ({ name: player.name }))
+    players: orderedPlayers.map(player => ({ name: player.name }))
   });
 
-  // ensure player order matches UID order
-  const seatUidOrder = orderedPlayersSorted.map(player => player.uid);
-
-  // force setup start
   state.startPlayer = 0;
   state.currentPlayer = 0;
   state.setupRound = 1;
   state.setupDirection = 1;
   state.setupOrderIndex = 0;
-
-  // VERY IMPORTANT → must exist or board is not clickable
-  state.pendingAction = {
-    type: "buildSettlement",
-    free: true,
-    source: "setup"
-  };
-
+  state.pendingAction = { type: "buildSettlement", free: true, source: "setup" };
+  state.phase = "setup";
   setStatus(`${playerName(state.currentPlayer)}: place your first settlement.`);
 
-  await update(getRoomRef(currentRoomCode), {
-    "meta/status": "playing",
-    "meta/updatedAt": Date.now(),
-    "meta/seatUidOrder": seatUidOrder,
-    gameState: serializeStateForRoom()
-  });
+  currentRoomData = {
+    ...(currentRoomData || {}),
+    meta: {
+      ...(currentRoomData?.meta || {}),
+      status: "playing",
+      updatedAt: Date.now(),
+      seatUidOrder
+    }
+  };
+
+  render();
 
   await update(getRoomRef(currentRoomCode), {
     "meta/status": "playing",
@@ -652,6 +648,9 @@ async function startOnlineMatch() {
     "meta/seatUidOrder": seatUidOrder,
     gameState: serializeStateForRoom()
   });
+
+  await syncRoomStateNow(true);
+  render();
 }
 
 async function syncRoomStateNow(force = false) {
