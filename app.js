@@ -273,6 +273,8 @@ function applySerializedStateFromRoom(remoteState) {
   state.winner = remoteState.winner ?? null;
   state.tradeLock = !!remoteState.tradeLock;
 
+  normalizeOnlineTurnState();
+
   if (state.phase === "setup" && !state.pendingAction) {
     state.pendingAction = { type: "buildSettlement", free: true, source: "setup" };
   }
@@ -282,17 +284,59 @@ function getOrderedRoomPlayers(roomData) {
   return Object.values(roomData?.players || {}).sort((a, b) => (a.seat ?? 99) - (b.seat ?? 99));
 }
 
+function getMySeatIndex() {
+  if (!firebaseUser || !currentRoomData?.players) return -1;
+  const seat = currentRoomData.players[firebaseUser.uid]?.seat;
+  return Number.isInteger(seat) ? seat : -1;
+}
+
+function getOnlineCurrentPlayerIndex() {
+  const playerCount = Array.isArray(state.players) ? state.players.length : 0;
+  if (playerCount <= 0) return 0;
+
+  const direct = Number(state.currentPlayer);
+  if (Number.isInteger(direct) && direct >= 0 && direct < playerCount) return direct;
+
+  const metaIndex = Number(currentRoomData?.meta?.currentPlayerIndex);
+  if (Number.isInteger(metaIndex) && metaIndex >= 0 && metaIndex < playerCount) return metaIndex;
+
+  return 0;
+}
+
+function normalizeOnlineTurnState() {
+  if (!currentRoomCode) return;
+
+  if ((!Array.isArray(state.players) || !state.players.length) && currentRoomData?.players) {
+    const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
+    if (orderedPlayers.length) {
+      state.players = setupPlayers(orderedPlayers.map(player => ({ name: player.name })));
+    }
+  }
+
+  if (Array.isArray(state.players) && state.players.length) {
+    state.currentPlayer = getOnlineCurrentPlayerIndex();
+  }
+}
+
 function getCurrentTurnUid() {
-  const directUid = currentRoomData?.meta?.seatUidOrder?.[state.currentPlayer];
+  const normalizedIndex = getOnlineCurrentPlayerIndex();
+  const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
+  const bySeat = orderedPlayers[normalizedIndex]?.uid;
+  if (bySeat) return bySeat;
+
+  const directUid = currentRoomData?.meta?.seatUidOrder?.[normalizedIndex];
   if (directUid) return directUid;
 
-  const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
-  return orderedPlayers[state.currentPlayer]?.uid || null;
+  return null;
 }
 
 function isMyTurnOnline() {
   if (!currentRoomCode) return true;
   if (!firebaseUser) return false;
+
+  const mySeatIndex = getMySeatIndex();
+  if (mySeatIndex >= 0 && mySeatIndex === getOnlineCurrentPlayerIndex()) return true;
+
   return getCurrentTurnUid() === firebaseUser.uid;
 }
 
@@ -606,51 +650,35 @@ async function startOnlineMatch() {
     return;
   }
 
-  const orderedPlayers = getOrderedRoomPlayers(currentRoomData)
-    .filter(player => player.connected)
-    .sort((a, b) => (a.seat ?? 99) - (b.seat ?? 99));
+  const orderedPlayers = getOrderedRoomPlayers(currentRoomData).filter(player => player.connected);
 
   if (orderedPlayers.length < 2) {
     alertMsg("You need at least 2 connected players to start.");
     return;
   }
 
-  const seatUidOrder = orderedPlayers.map(player => player.uid);
-
   startNewGame({
     players: orderedPlayers.map(player => ({ name: player.name }))
   });
 
+  // For online play, always let seat 0 / host start setup first.
   state.startPlayer = 0;
   state.currentPlayer = 0;
   state.setupRound = 1;
   state.setupDirection = 1;
   state.setupOrderIndex = 0;
   state.pendingAction = { type: "buildSettlement", free: true, source: "setup" };
-  state.phase = "setup";
   setStatus(`${playerName(state.currentPlayer)}: place your first settlement.`);
 
-  currentRoomData = {
-    ...(currentRoomData || {}),
-    meta: {
-      ...(currentRoomData?.meta || {}),
-      status: "playing",
-      updatedAt: Date.now(),
-      seatUidOrder
-    }
-  };
-
-  render();
+  const seatUidOrder = orderedPlayers.map(player => player.uid);
 
   await update(getRoomRef(currentRoomCode), {
     "meta/status": "playing",
     "meta/updatedAt": Date.now(),
     "meta/seatUidOrder": seatUidOrder,
+    "meta/currentPlayerIndex": state.currentPlayer,
     gameState: serializeStateForRoom()
   });
-
-  await syncRoomStateNow(true);
-  render();
 }
 
 async function syncRoomStateNow(force = false) {
@@ -664,6 +692,7 @@ async function syncRoomStateNow(force = false) {
 
   await update(getRoomRef(currentRoomCode), {
     "meta/updatedAt": Date.now(),
+    "meta/currentPlayerIndex": state.currentPlayer,
     gameState: serializeStateForRoom()
   });
 }
