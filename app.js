@@ -300,47 +300,169 @@ function terrainAssetPath(terrain) {
   return `assets/hexes/${terrain}.png`; // use uploaded PNG terrain tiles
 }
 
-function roadAssetPath() {
-  return "assets/road.png";
+
+function svgToDataUri(svg) {
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }
 
-function drawRoadSprite(svg, a, b, playerColor) {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const len = Math.hypot(dx, dy);
-  const angle = Math.atan2(dy, dx) * 180 / Math.PI;
-  const midX = (a.x + b.x) / 2;
-  const midY = (a.y + b.y) / 2;
+const pieceAssetCache = new Map();
 
-  const shadow = document.createElementNS("http://www.w3.org/2000/svg", "line");
-  shadow.setAttribute("x1", a.x);
-  shadow.setAttribute("y1", a.y);
-  shadow.setAttribute("x2", b.x);
-  shadow.setAttribute("y2", b.y);
-  shadow.setAttribute("class", "road-shadow");
-  svg.appendChild(shadow);
-
-  const underlay = document.createElementNS("http://www.w3.org/2000/svg", "line");
-  underlay.setAttribute("x1", a.x);
-  underlay.setAttribute("y1", a.y);
-  underlay.setAttribute("x2", b.x);
-  underlay.setAttribute("y2", b.y);
-  underlay.setAttribute("class", "road-underlay");
-  underlay.setAttribute("stroke", playerColor);
-  svg.appendChild(underlay);
-
-  const img = document.createElementNS("http://www.w3.org/2000/svg", "image");
-  img.setAttribute("href", roadAssetPath());
-  img.setAttribute("x", midX - len / 2);
-  img.setAttribute("y", midY - 14);
-  img.setAttribute("width", len);
-  img.setAttribute("height", 28);
-  img.setAttribute("preserveAspectRatio", "none");
-  img.setAttribute("transform", `rotate(${angle} ${midX} ${midY})`);
-  img.setAttribute("class", "road-image");
-  svg.appendChild(img);
+function shadeColor(hex, amt) {
+  const value = hex.replace("#", "");
+  const num = parseInt(value, 16);
+  let r = (num >> 16) & 255;
+  let g = (num >> 8) & 255;
+  let b = num & 255;
+  r = Math.max(0, Math.min(255, r + amt));
+  g = Math.max(0, Math.min(255, g + amt));
+  b = Math.max(0, Math.min(255, b + amt));
+  return `#${[r,g,b].map(v => v.toString(16).padStart(2, "0")).join("")}`;
 }
 
+function getPieceAsset(type, color) {
+  const key = `${type}-${color}`;
+  if (pieceAssetCache.has(key)) return pieceAssetCache.get(key);
+
+  const roof = shadeColor(color, -18);
+  const roofLight = shadeColor(color, 34);
+  const trim = shadeColor(color, -54);
+  const windowLight = "#d9f2ff";
+  const wall = "#dec7a4";
+  const wallDark = "#ae8f6e";
+  const wood = "#6d4b31";
+  const svgMap = {
+    road: `
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 64">
+        <defs>
+          <linearGradient id="roadBody" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#9b6a3c"/>
+            <stop offset="52%" stop-color="#7b4f2a"/>
+            <stop offset="100%" stop-color="#5e3c1d"/>
+          </linearGradient>
+          <linearGradient id="roadStripe" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="${roofLight}"/>
+            <stop offset="100%" stop-color="${roof}"/>
+          </linearGradient>
+          <filter id="shadow" x="-30%" y="-80%" width="160%" height="240%">
+            <feDropShadow dx="0" dy="5" stdDeviation="4" flood-color="rgba(0,0,0,.45)"/>
+          </filter>
+        </defs>
+        <g filter="url(#shadow)">
+          <rect x="10" y="12" width="160" height="40" rx="16" fill="url(#roadBody)" stroke="#3f2814" stroke-width="3"/>
+          <rect x="24" y="21" width="132" height="22" rx="10" fill="url(#roadStripe)" opacity=".96"/>
+          <g opacity=".28" stroke="#3a2514" stroke-width="2">
+            <line x1="38" y1="16" x2="28" y2="48"/>
+            <line x1="66" y1="14" x2="56" y2="50"/>
+            <line x1="95" y1="14" x2="85" y2="50"/>
+            <line x1="124" y1="14" x2="114" y2="50"/>
+            <line x1="151" y1="15" x2="141" y2="49"/>
+          </g>
+          <rect x="18" y="17" width="144" height="7" rx="3.5" fill="rgba(255,255,255,.22)"/>
+        </g>
+      </svg>`,
+    settlement: `
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 92 102">
+        <defs>
+          <linearGradient id="roofGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="${roofLight}"/>
+            <stop offset="100%" stop-color="${roof}"/>
+          </linearGradient>
+          <linearGradient id="wallGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#f4e4c5"/>
+            <stop offset="100%" stop-color="${wall}"/>
+          </linearGradient>
+          <filter id="shadow" x="-25%" y="-25%" width="160%" height="180%">
+            <feDropShadow dx="0" dy="5" stdDeviation="4" flood-color="rgba(0,0,0,.45)"/>
+          </filter>
+        </defs>
+        <g filter="url(#shadow)">
+          <path d="M16 92 L16 48 L46 24 L76 48 L76 92 Z" fill="url(#wallGrad)" stroke="${trim}" stroke-width="3" />
+          <path d="M9 49 L46 16 L83 49 L72 55 L46 32 L20 55 Z" fill="url(#roofGrad)" stroke="${trim}" stroke-width="3"/>
+          <rect x="38" y="60" width="16" height="32" rx="3" fill="${wood}" />
+          <rect x="22" y="58" width="12" height="12" rx="2" fill="${windowLight}" stroke="${trim}" stroke-width="2"/>
+          <rect x="58" y="58" width="12" height="12" rx="2" fill="${windowLight}" stroke="${trim}" stroke-width="2"/>
+          <path d="M61 23 h9 v15 h-9 z" fill="${wallDark}" stroke="${trim}" stroke-width="2"/>
+          <path d="M17 93 h58" stroke="rgba(0,0,0,.22)" stroke-width="5" stroke-linecap="round"/>
+          <path d="M19 51 h54" stroke="rgba(255,255,255,.25)" stroke-width="4" stroke-linecap="round"/>
+        </g>
+      </svg>`,
+    city: `
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 114">
+        <defs>
+          <linearGradient id="roofGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="${roofLight}"/>
+            <stop offset="100%" stop-color="${roof}"/>
+          </linearGradient>
+          <linearGradient id="wallGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#f4e4c5"/>
+            <stop offset="100%" stop-color="${wall}"/>
+          </linearGradient>
+          <filter id="shadow" x="-25%" y="-25%" width="160%" height="180%">
+            <feDropShadow dx="0" dy="6" stdDeviation="4" flood-color="rgba(0,0,0,.45)"/>
+          </filter>
+        </defs>
+        <g filter="url(#shadow)">
+          <rect x="20" y="47" width="80" height="54" rx="6" fill="url(#wallGrad)" stroke="${trim}" stroke-width="3"/>
+          <path d="M12 51 L60 17 L108 51 L97 58 L60 32 L23 58 Z" fill="url(#roofGrad)" stroke="${trim}" stroke-width="3"/>
+          <rect x="30" y="33" width="18" height="68" rx="4" fill="url(#wallGrad)" stroke="${trim}" stroke-width="3"/>
+          <rect x="72" y="33" width="18" height="68" rx="4" fill="url(#wallGrad)" stroke="${trim}" stroke-width="3"/>
+          <path d="M24 38 L39 24 L54 38 Z" fill="url(#roofGrad)" stroke="${trim}" stroke-width="3"/>
+          <path d="M66 38 L81 24 L96 38 Z" fill="url(#roofGrad)" stroke="${trim}" stroke-width="3"/>
+          <rect x="52" y="66" width="16" height="35" rx="3" fill="${wood}" />
+          <rect x="33" y="57" width="11" height="12" rx="2" fill="${windowLight}" stroke="${trim}" stroke-width="2"/>
+          <rect x="76" y="57" width="11" height="12" rx="2" fill="${windowLight}" stroke="${trim}" stroke-width="2"/>
+          <rect x="33" y="75" width="11" height="12" rx="2" fill="${windowLight}" stroke="${trim}" stroke-width="2"/>
+          <rect x="76" y="75" width="11" height="12" rx="2" fill="${windowLight}" stroke="${trim}" stroke-width="2"/>
+          <path d="M23 102 h74" stroke="rgba(0,0,0,.22)" stroke-width="6" stroke-linecap="round"/>
+          <path d="M25 54 h70" stroke="rgba(255,255,255,.22)" stroke-width="4" stroke-linecap="round"/>
+        </g>
+      </svg>`
+  };
+  const uri = svgToDataUri(svgMap[type]);
+  pieceAssetCache.set(key, uri);
+  return uri;
+}
+
+function drawRoadPiece(svg, edge, player) {
+  const a = state.board.vertices[edge.a];
+  const b = state.board.vertices[edge.b];
+  const mid = midpoint(a, b);
+  const angle = Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI;
+  const road = document.createElementNS("http://www.w3.org/2000/svg", "image");
+  road.setAttribute("href", getPieceAsset("road", player.color));
+  road.setAttribute("x", mid.x - 46);
+  road.setAttribute("y", mid.y - 18);
+  road.setAttribute("width", 92);
+  road.setAttribute("height", 36);
+  road.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  road.setAttribute("transform", `rotate(${angle} ${mid.x} ${mid.y})`);
+  road.setAttribute("class", "road-piece");
+  svg.appendChild(road);
+}
+
+function drawSettlementPiece(svg, vertex, player) {
+  const settlement = document.createElementNS("http://www.w3.org/2000/svg", "image");
+  settlement.setAttribute("href", getPieceAsset("settlement", player.color));
+  settlement.setAttribute("x", vertex.x - 24);
+  settlement.setAttribute("y", vertex.y - 50);
+  settlement.setAttribute("width", 48);
+  settlement.setAttribute("height", 54);
+  settlement.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  settlement.setAttribute("class", "settlement-piece");
+  svg.appendChild(settlement);
+}
+
+function drawCityPiece(svg, vertex, player) {
+  const city = document.createElementNS("http://www.w3.org/2000/svg", "image");
+  city.setAttribute("href", getPieceAsset("city", player.color));
+  city.setAttribute("x", vertex.x - 32);
+  city.setAttribute("y", vertex.y - 58);
+  city.setAttribute("width", 64);
+  city.setAttribute("height", 62);
+  city.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  city.setAttribute("class", "city-piece");
+  svg.appendChild(city);
+}
 
 function renderBoard() {
   const svg = els.board;
@@ -447,7 +569,7 @@ function renderBoard() {
     svg.appendChild(hit);
 
     if (edge.owner !== null) {
-      drawRoadSprite(svg, a, b, state.players[edge.owner].color);
+      drawRoadPiece(svg, edge, state.players[edge.owner]);
     }
   });
 
@@ -480,17 +602,9 @@ function renderBoard() {
     if (v.building) {
       const player = state.players[v.building.owner];
       if (v.building.type === "settlement") {
-        const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        p.setAttribute("d", `M ${v.x-13} ${v.y+10} L ${v.x-13} ${v.y-2} L ${v.x} ${v.y-16} L ${v.x+13} ${v.y-2} L ${v.x+13} ${v.y+10} Z`);
-        p.setAttribute("fill", player.color);
-        p.setAttribute("class", "settlement-shape");
-        svg.appendChild(p);
+        drawSettlementPiece(svg, v, player);
       } else {
-        const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        p.setAttribute("d", `M ${v.x-16} ${v.y+11} L ${v.x-16} ${v.y-2} L ${v.x-4} ${v.y-2} L ${v.x-4} ${v.y-14} L ${v.x+9} ${v.y-14} L ${v.x+9} ${v.y-2} L ${v.x+16} ${v.y-2} L ${v.x+16} ${v.y+11} Z`);
-        p.setAttribute("fill", player.color);
-        p.setAttribute("class", "city-shape");
-        svg.appendChild(p);
+        drawCityPiece(svg, v, player);
       }
     }
   });

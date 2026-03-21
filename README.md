@@ -40,11 +40,12 @@ This project is a fan-made, unlicensed implementation for learning/personal use.
 
 This build supports image-based terrain tiles from `assets/hexes/`.
 Included files:
-- `wood.svg`
-- `brick.svg`
-- `sheep.svg`
-- `wheat.svg`
-- `ore.svg`
-- `desert.svg`
+- `wood.png`
+- `brick.png`
+- `sheep.png`
+- `wheat.png`
+- `ore.png`
+- `desert.png`
+- `robber.png`
 
-To replace them with your own art, keep the same filenames. Any square image works.
+The terrains and robber are loaded from the `assets/` folder. Roads, settlements, and cities are now rendered as more realistic in-game SVG image pieces with player-color styling, so no separate road/settlement asset files are required.
