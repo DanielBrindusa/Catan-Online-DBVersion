@@ -381,7 +381,7 @@ function updateRoomPanel() {
           <div>
             <strong>${escapeHtml(player.name)}</strong>
             ${isYou ? `<span class="online-player-you">(You)</span>` : ""}
-            ${isCurrentTurn ? `<span class="online-player-you">• TURN</span>` : ""}
+            ${isCurrentTurn ? `<span class="online-player-you"> • TURN</span>` : ""}
           </div>
           <div class="online-player-tag">Seat ${player.seat + 1}</div>
         </div>
@@ -442,6 +442,7 @@ async function subscribeToRoom(roomCode) {
       applySerializedStateFromRoom(roomData.gameState);
       render();
       suppressRoomSync = false;
+      updateRoomPanel();
     }
 
     setLobbyStatusMessage(roomData);
