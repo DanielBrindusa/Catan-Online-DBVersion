@@ -1,3 +1,56 @@
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-app.js";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-auth.js";
+import { getDatabase, ref, set, get, update, remove, onValue, runTransaction, onDisconnect } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-database.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBkMVO3-dpYpjsl4h5pP7QvDQ5ZbKr_Qus",
+  authDomain: "catan-online-ec090.firebaseapp.com",
+  databaseURL: "https://catan-online-ec090-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "catan-online-ec090",
+  storageBucket: "catan-online-ec090.firebasestorage.app",
+  messagingSenderId: "375498763602",
+  appId: "1:375498763602:web:ec536ac1844f07c71f5e8b",
+  measurementId: "G-BJZFKFGSR8"
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const auth = getAuth(firebaseApp);
+const db = getDatabase(firebaseApp);
+
+let firebaseUser = null;
+let currentRoomCode = null;
+let currentRoomUnsubscribe = null;
+
+async function initFirebaseAuth() {
+  await signInAnonymously(auth);
+
+  return new Promise((resolve) => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        firebaseUser = user;
+        console.log("Firebase anonymous login successful:", user.uid);
+        unsubscribe();
+        resolve(user);
+      }
+    });
+  });
+}
+
+async function bootstrapFirebase() {
+  try {
+    await initFirebaseAuth();
+    console.log("Firebase is ready");
+  } catch (error) {
+    console.error("Firebase initialization failed:", error);
+    alert("Firebase failed to initialize. Open the browser console with F12 and check the error.");
+  }
+}
+
+
+
+
+
+//GAME CODE
 const RESOURCES = ["wood", "brick", "sheep", "wheat", "ore"];
 const RESOURCE_COLORS = {
   wood: "#16a34a",
@@ -1467,3 +1520,4 @@ function bindEvents() {
 bindEvents();
 openHelp();
 render();
+bootstrapFirebase();
