@@ -297,6 +297,14 @@ function updateRoomPanel() {
   els.roomStatusDisplay.textContent = currentRoomData?.meta?.status || "Offline";
   els.leaveRoomBtn.disabled = !currentRoomCode;
 
+  const inOnlineRoom = !!currentRoomCode;
+  const roomStatus = currentRoomData?.meta?.status || "Offline";
+
+  els.newGameBtn.disabled = inOnlineRoom;
+  els.createRoomBtn.disabled = inOnlineRoom;
+  els.joinRoomBtn.disabled = inOnlineRoom;
+  els.joinRoomCodeInput.disabled = inOnlineRoom;
+
   const canStart =
     !!currentRoomCode &&
     isRoomHost() &&
@@ -304,6 +312,23 @@ function updateRoomPanel() {
     getOrderedRoomPlayers(currentRoomData).length >= 2;
 
   els.startOnlineMatchBtn.disabled = !canStart;
+
+
+  if (inOnlineRoom) {
+    if (isRoomHost() && roomStatus === "lobby") {
+      els.newGameBtn.textContent = "Online Room Active";
+    } else {
+      els.newGameBtn.textContent = "Waiting For Host";
+    }
+  } else {
+    els.newGameBtn.textContent = "New Game";
+  }
+
+  if (inOnlineRoom) {
+    els.newGameBtn.style.display = "none";
+  } else {
+    els.newGameBtn.style.display = "";
+  }
 
   const players = getOrderedRoomPlayers(currentRoomData);
 
@@ -334,7 +359,11 @@ function setLobbyStatusMessage(roomData) {
   if (!roomData) return;
 
   if (roomData.meta?.status === "lobby") {
-    setStatus("Online room ready. Wait for players, then the host starts the match.");
+    if (isRoomHost()) {
+      setStatus("Online room ready. Wait for players, then click 'Start Online Match'.");
+    } else {
+      setStatus("You joined the room. Waiting for the host to start the match.");
+    }
     return;
   }
 
@@ -564,10 +593,15 @@ async function startOnlineMatch() {
     return;
   }
 
-  const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
+  if (currentRoomData.meta?.status !== "lobby") {
+    alertMsg("This room is not in lobby state anymore.");
+    return;
+  }
+
+  const orderedPlayers = getOrderedRoomPlayers(currentRoomData).filter(player => player.connected);
 
   if (orderedPlayers.length < 2) {
-    alertMsg("You need at least 2 players to start.");
+    alertMsg("You need at least 2 connected players to start.");
     return;
   }
 
@@ -1929,6 +1963,11 @@ function openHelp() {
 }
 
 function openNewGameModal() {
+  if (currentRoomCode) {
+    alertMsg("When you are in an online room, only the room host can start the match with 'Start Online Match'.");
+    return;
+  }
+
   openModal({
     title: "Start New Game",
     body: `
