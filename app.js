@@ -21,6 +21,16 @@ let firebaseUser = null;
 let currentRoomCode = null;
 let currentRoomUnsubscribe = null;
 
+const CLIENT_ID_STORAGE_KEY = "catanClientId";
+function getClientId() {
+  let clientId = localStorage.getItem(CLIENT_ID_STORAGE_KEY);
+  if (!clientId) {
+    clientId = (globalThis.crypto?.randomUUID?.() || `client-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+    localStorage.setItem(CLIENT_ID_STORAGE_KEY, clientId);
+  }
+  return clientId;
+}
+
 async function initFirebaseAuth() {
   await signInAnonymously(auth);
 
@@ -44,8 +54,8 @@ async function bootstrapFirebase() {
 
     const savedRoomCode = localStorage.getItem("catanCurrentRoomCode");
     if (savedRoomCode) {
-      const roomSnapshot = await get(getRoomRef(savedRoomCode));
-      if (roomSnapshot.exists() && roomSnapshot.val()?.players?.[auth.currentUser.uid]) {
+      const reattached = await restoreRoomMembership(savedRoomCode);
+      if (reattached) {
         await subscribeToRoom(savedRoomCode);
         await markPresenceConnected(savedRoomCode);
       } else {
@@ -283,29 +293,80 @@ function getOrderedRoomPlayers(roomData) {
   return Object.values(roomData?.players || {}).sort((a, b) => (a.seat ?? 99) - (b.seat ?? 99));
 }
 
-function getOnlineTurnIndex(roomData = currentRoomData) {
-  const idx = roomData?.gameState?.currentPlayer;
-  if (Number.isInteger(idx)) return idx;
-  return Number.isInteger(state.currentPlayer) ? state.currentPlayer : 0;
-}
+function getCurrentTurnUid() {
+  const remoteCurrentPlayer = currentRoomData?.gameState?.currentPlayer;
+  const currentIndex = Number.isInteger(remoteCurrentPlayer) ? remoteCurrentPlayer : state.currentPlayer;
 
-function getCurrentTurnUid(roomData = currentRoomData) {
-  const turnIndex = getOnlineTurnIndex(roomData);
-  const directUid = roomData?.meta?.seatUidOrder?.[turnIndex];
+  const directUid = currentRoomData?.meta?.seatUidOrder?.[currentIndex];
   if (directUid) return directUid;
 
-  const orderedPlayers = getOrderedRoomPlayers(roomData);
-  return orderedPlayers[turnIndex]?.uid || null;
+  const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
+  return orderedPlayers[currentIndex]?.uid || null;
 }
 
-function getOnlineCurrentTurnName(roomData = currentRoomData) {
-  const turnIndex = getOnlineTurnIndex(roomData);
-  const uid = roomData?.meta?.seatUidOrder?.[turnIndex];
-  if (uid && roomData?.players?.[uid]?.name) {
-    return roomData.players[uid].name;
+function getOnlineCurrentPlayerIndex() {
+  const remoteCurrentPlayer = currentRoomData?.gameState?.currentPlayer;
+  return Number.isInteger(remoteCurrentPlayer) ? remoteCurrentPlayer : state.currentPlayer;
+}
+
+function getOnlineCurrentTurnName() {
+  const index = getOnlineCurrentPlayerIndex();
+  const uid = currentRoomData?.meta?.seatUidOrder?.[index];
+  if (uid && currentRoomData?.players?.[uid]?.name) return currentRoomData.players[uid].name;
+
+  const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
+  return orderedPlayers[index]?.name || "-";
+}
+
+async function restoreRoomMembership(roomCode) {
+  if (!firebaseUser) return false;
+
+  const roomSnapshot = await get(getRoomRef(roomCode));
+  if (!roomSnapshot.exists()) return false;
+
+  const roomData = roomSnapshot.val();
+  const players = roomData?.players || {};
+  const currentUid = firebaseUser.uid;
+  const clientId = getClientId();
+
+  if (players[currentUid]) {
+    const patch = {};
+    if (!players[currentUid].clientId) patch[`players/${currentUid}/clientId`] = clientId;
+    if (players[currentUid].connected !== true) patch[`players/${currentUid}/connected`] = true;
+    if (Object.keys(patch).length) {
+      patch["meta/updatedAt"] = Date.now();
+      await update(getRoomRef(roomCode), patch);
+    }
+    return true;
   }
-  const orderedPlayers = getOrderedRoomPlayers(roomData);
-  return orderedPlayers[turnIndex]?.name || state.players[turnIndex]?.name || "-";
+
+  const previousEntry = Object.entries(players).find(([, player]) => player?.clientId === clientId);
+  if (!previousEntry) return false;
+
+  const [oldUid, oldPlayer] = previousEntry;
+  const patch = {
+    [`players/${currentUid}`]: {
+      ...oldPlayer,
+      uid: currentUid,
+      clientId,
+      connected: true,
+      name: localStorage.getItem("catanNickname") || oldPlayer.name || "Player"
+    },
+    [`players/${oldUid}`]: null,
+    "meta/updatedAt": Date.now()
+  };
+
+  if (roomData?.meta?.hostUid === oldUid) {
+    patch["meta/hostUid"] = currentUid;
+  }
+
+  const seatUidOrder = Array.isArray(roomData?.meta?.seatUidOrder) ? [...roomData.meta.seatUidOrder] : [];
+  if (seatUidOrder.length) {
+    patch["meta/seatUidOrder"] = seatUidOrder.map((uid) => uid === oldUid ? currentUid : uid);
+  }
+
+  await update(getRoomRef(roomCode), patch);
+  return true;
 }
 
 function isMyTurnOnline() {
@@ -323,13 +384,14 @@ function updateRoomPanel() {
   els.roomStatusDisplay.textContent = currentRoomData?.meta?.status || "Offline";
   els.leaveRoomBtn.disabled = !currentRoomCode;
 
-  if (els.onlineCurrentTurnDisplay) {
-    const showTurn = !!currentRoomCode && currentRoomData?.meta?.status === "playing";
-    els.onlineCurrentTurnDisplay.textContent = showTurn ? getOnlineCurrentTurnName(currentRoomData) : "-";
-  }
-
   const inOnlineRoom = !!currentRoomCode;
   const roomStatus = currentRoomData?.meta?.status || "Offline";
+  const currentTurnIndex = getOnlineCurrentPlayerIndex();
+
+  if (els.onlineCurrentTurnDisplay) {
+    els.onlineCurrentTurnDisplay.textContent =
+      currentRoomData?.meta?.status === "playing" ? getOnlineCurrentTurnName() : "-";
+  }
 
   els.newGameBtn.disabled = inOnlineRoom;
   els.createRoomBtn.disabled = inOnlineRoom;
@@ -367,18 +429,21 @@ function updateRoomPanel() {
     return;
   }
 
-  const turnIndex = getOnlineTurnIndex(currentRoomData);
-  els.onlinePlayersList.innerHTML = players.map(player => {
+  els.onlinePlayersList.innerHTML = players.map((player, index) => {
     const isYou = firebaseUser && player.uid === firebaseUser.uid;
     const connectionClass = player.connected ? "connected" : "disconnected";
     const connectionText = player.connected ? "Connected" : "Offline";
-    const isTurn = currentRoomData?.meta?.status === "playing" && player.seat === turnIndex;
+    const isCurrentTurn = currentRoomData?.meta?.status === "playing" && index === currentTurnIndex;
 
     return `
       <div class="online-player-row">
         <div class="online-player-dot" style="background:${player.color}"></div>
         <div>
-          <div><strong>${escapeHtml(player.name)}</strong> ${isYou ? `<span class="online-player-you">(You)</span>` : ""} ${isTurn ? `<span class="online-player-you">• TURN</span>` : ""}</div>
+          <div>
+            <strong>${escapeHtml(player.name)}</strong>
+            ${isYou ? `<span class="online-player-you">(You)</span>` : ""}
+            ${isCurrentTurn ? `<span class="online-player-you">• TURN</span>` : ""}
+          </div>
           <div class="online-player-tag">Seat ${player.seat + 1}</div>
         </div>
         <div class="room-pill ${connectionClass}">${connectionText}</div>
@@ -449,8 +514,13 @@ async function subscribeToRoom(roomCode) {
 async function markPresenceConnected(roomCode) {
   if (!firebaseUser) return;
 
+  const playerBaseRef = ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}`);
+  await update(playerBaseRef, {
+    connected: true,
+    clientId: getClientId()
+  });
+
   const connectedRef = ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}/connected`);
-  await set(connectedRef, true);
   onDisconnect(connectedRef).set(false);
 }
 
@@ -489,6 +559,7 @@ async function createRoom() {
       roomCode = candidate;
       const playerData = {
         uid: firebaseUser.uid,
+        clientId: getClientId(),
         name: nickname,
         seat: 0,
         color: PLAYER_COLORS[0],
@@ -571,12 +642,14 @@ async function joinRoom() {
   if (existingPlayer) {
     await update(ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}`), {
       name: nickname,
+      clientId: getClientId(),
       connected: true
     });
   } else {
     const nextSeat = players.length;
     await set(ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}`), {
       uid: firebaseUser.uid,
+      clientId: getClientId(),
       name: nickname,
       seat: nextSeat,
       color: PLAYER_COLORS[nextSeat],
@@ -1280,8 +1353,7 @@ function renderSidebar() {
     return;
   }
 
-  const sidebarTurnName = currentRoomCode ? getOnlineCurrentTurnName(currentRoomData) : p.name;
-  els.turnLabel.textContent = state.gameStarted ? `• ${sidebarTurnName}` : "";
+  els.turnLabel.textContent = state.gameStarted ? `• ${p.name}` : "";
   els.diceResult.textContent = state.dice
     ? `${state.dice[0]} + ${state.dice[1]} = ${state.dice[0] + state.dice[1]}`
     : "-";
@@ -1291,7 +1363,7 @@ function renderSidebar() {
       <div class="player-card">
         <div class="player-dot" style="background:${p.color}"></div>
         <div>
-          <div><strong>${escapeHtml(sidebarTurnName)}</strong></div>
+          <div><strong>${escapeHtml(p.name)}</strong></div>
           <div class="cost-row">
             <span class="badge">Roads left: ${p.roadsLeft}</span>
             <span class="badge">Settlements left: ${p.settlementsLeft}</span>
