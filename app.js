@@ -98,13 +98,13 @@ async function bootstrapFirebase() {
     const savedRoomCode = localStorage.getItem("catanCurrentRoomCode");
     if (savedRoomCode) {
       const roomSnapshot = await get(getRoomRef(savedRoomCode));
+
       if (roomSnapshot.exists()) {
         const roomData = roomSnapshot.val();
-        const restored = roomData?.players?.[auth.currentUser.uid]
-          ? true
-          : await reclaimRoomSeatIfNeeded(savedRoomCode, roomData);
+        const players = roomData?.players || {};
+        const hasCurrentUid = !!players[auth.currentUser.uid];
 
-        if (restored) {
+        if (hasCurrentUid) {
           await subscribeToRoom(savedRoomCode);
           await markPresenceConnected(savedRoomCode);
         } else {
@@ -213,6 +213,10 @@ let currentRoomData = null;
 let suppressRoomSync = false;
 let roomSyncTimer = null;
 
+if (!localStorage.getItem("catanClientId")) {
+  localStorage.setItem("catanClientId", crypto.randomUUID());
+}
+
 function generateRoomCode(length = 5) {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let code = "";
@@ -249,6 +253,25 @@ function getRoomRef(roomCode) {
 
 function getSystemCountRef() {
   return ref(db, "system/activeRoomCount");
+}
+
+function getPlayerRef(roomCode, uid) {
+  return ref(db, `rooms/${roomCode}/players/${uid}`);
+}
+
+function getPlayersRef(roomCode) {
+  return ref(db, `rooms/${roomCode}/players`);
+}
+
+function getMetaRef(roomCode) {
+  return ref(db, `rooms/${roomCode}/meta`);
+}
+
+async function decrementActiveRoomCountSafe() {
+  await runTransaction(getSystemCountRef(), (current) => {
+    const safeCurrent = typeof current === "number" ? current : 0;
+    return Math.max(safeCurrent - 1, 0);
+  });
 }
 
 function serializeBoard(board) {
@@ -384,6 +407,45 @@ function isRoomHost() {
   return !!(currentRoomData?.meta?.hostUid && firebaseUser && currentRoomData.meta.hostUid === firebaseUser.uid);
 }
 
+async function cleanupRoomPresence(roomCode, roomData) {
+  if (!roomCode || !roomData) return;
+
+  const playersObj = roomData.players || {};
+  const players = Object.values(playersObj);
+
+  // No players left at all -> delete room
+  if (!players.length) {
+    await remove(getRoomRef(roomCode));
+    await decrementActiveRoomCountSafe();
+    return;
+  }
+
+  const connectedPlayers = players
+    .filter(player => player && player.connected)
+    .sort((a, b) => (a.seat ?? 999) - (b.seat ?? 999));
+
+  // Everyone disconnected -> delete room
+  if (connectedPlayers.length === 0) {
+    await remove(getRoomRef(roomCode));
+    await decrementActiveRoomCountSafe();
+    return;
+  }
+
+  const currentHostUid = roomData.meta?.hostUid;
+  const hostStillConnected = connectedPlayers.some(player => player.uid === currentHostUid);
+
+  // If host is gone but players remain, promote next connected player
+  if (!hostStillConnected) {
+    const newHost = connectedPlayers[0];
+    if (newHost?.uid && newHost.uid !== currentHostUid) {
+      await update(getMetaRef(roomCode), {
+        hostUid: newHost.uid,
+        updatedAt: Date.now()
+      });
+    }
+  }
+}
+
 function updateRoomPanel() {
   els.roomCodeDisplay.textContent = currentRoomCode || "-";
   els.roomStatusDisplay.textContent = currentRoomData?.meta?.status || "Offline";
@@ -502,23 +564,26 @@ async function subscribeToRoom(roomCode) {
       suppressRoomSync = true;
       applySerializedStateFromRoom(roomData.gameState);
       suppressRoomSync = false;
-      render();
-    } else {
-      updateRoomPanel();
     }
 
+    updateRoomPanel();
+    render();
     setLobbyStatusMessage(roomData);
+
+    cleanupRoomPresence(roomCode, roomData).catch((error) => {
+      console.error("cleanupRoomPresence failed:", error);
+    });
   });
 
   updateRoomPanel();
 }
 
 async function markPresenceConnected(roomCode) {
-  if (!firebaseUser) return;
+  if (!firebaseUser || !roomCode) return;
 
   const connectedRef = ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}/connected`);
   await set(connectedRef, true);
-  onDisconnect(connectedRef).set(false);
+  await onDisconnect(connectedRef).set(false);
 }
 
 async function createRoom() {
@@ -556,13 +621,17 @@ async function createRoom() {
       roomCode = candidate;
       const playerData = {
         uid: firebaseUser.uid,
-        clientId: getClientId(),
         name: nickname,
         seat: 0,
         color: PLAYER_COLORS[0],
         connected: true,
-        joinedAt: Date.now()
+        joinedAt: Date.now(),
+        clientId: localStorage.getItem("catanClientId") || crypto.randomUUID()
       };
+
+      if (!localStorage.getItem("catanClientId")) {
+        localStorage.setItem("catanClientId", playerData.clientId);
+      }
 
       await set(roomRef, {
         meta: {
@@ -653,20 +722,21 @@ async function joinRoom() {
       connected: true
     });
   } else {
-    if (roomStatus !== "lobby") {
-      alertMsg("This match already started. Rejoin from the same device instead of joining as a new player.");
-      return;
+    let clientId = localStorage.getItem("catanClientId");
+    if (!clientId) {
+      clientId = crypto.randomUUID();
+      localStorage.setItem("catanClientId", clientId);
     }
 
     const nextSeat = players.length;
     await set(ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}`), {
       uid: firebaseUser.uid,
-      clientId,
       name: nickname,
       seat: nextSeat,
       color: PLAYER_COLORS[nextSeat],
       connected: true,
-      joinedAt: Date.now()
+      joinedAt: Date.now(),
+      clientId
     });
   }
 
@@ -678,18 +748,21 @@ async function leaveRoom() {
   if (!currentRoomCode || !firebaseUser) return;
 
   const roomCode = currentRoomCode;
-  const wasHost = isRoomHost();
 
   if (currentRoomUnsubscribe) {
     currentRoomUnsubscribe();
     currentRoomUnsubscribe = null;
   }
 
-  if (wasHost) {
-    await remove(getRoomRef(roomCode));
-    await runTransaction(getSystemCountRef(), (current) => Math.max((current || 1) - 1, 0));
+  await remove(getPlayerRef(roomCode, firebaseUser.uid));
+
+  const roomSnapshot = await get(getRoomRef(roomCode));
+
+  if (!roomSnapshot.exists()) {
+    await decrementActiveRoomCountSafe();
   } else {
-    await remove(ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}`));
+    const roomData = roomSnapshot.val();
+    await cleanupRoomPresence(roomCode, roomData);
   }
 
   currentRoomCode = null;
