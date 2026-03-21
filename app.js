@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-app.js";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-auth.js";
-import { getDatabase, ref, set, get, update, remove, onValue, runTransaction, onDisconnect } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-database.js";
+import { getDatabase, ref, set, get, update, remove, onValue, runTransaction, onDisconnect, push } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBkMVO3-dpYpjsl4h5pP7QvDQ5ZbKr_Qus",
@@ -21,14 +21,57 @@ let firebaseUser = null;
 let currentRoomCode = null;
 let currentRoomUnsubscribe = null;
 
-const CLIENT_ID_STORAGE_KEY = "catanClientId";
 function getClientId() {
-  let clientId = localStorage.getItem(CLIENT_ID_STORAGE_KEY);
+  let clientId = localStorage.getItem("catanClientId");
   if (!clientId) {
     clientId = (globalThis.crypto?.randomUUID?.() || `client-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
-    localStorage.setItem(CLIENT_ID_STORAGE_KEY, clientId);
+    localStorage.setItem("catanClientId", clientId);
   }
   return clientId;
+}
+
+function findRoomPlayerByClientId(roomData, clientId) {
+  return Object.entries(roomData?.players || {}).find(([, player]) => player?.clientId === clientId) || null;
+}
+
+async function reclaimRoomSeatIfNeeded(roomCode, roomData) {
+  if (!firebaseUser || !roomData) return false;
+
+  const currentEntry = roomData.players?.[firebaseUser.uid];
+  if (currentEntry) return true;
+
+  const clientId = getClientId();
+  const match = findRoomPlayerByClientId(roomData, clientId);
+  if (!match) return false;
+
+  const [oldUid, oldPlayer] = match;
+  if (!oldPlayer) return false;
+
+  const updates = {};
+  updates[`players/${firebaseUser.uid}`] = {
+    ...oldPlayer,
+    uid: firebaseUser.uid,
+    clientId,
+    connected: true
+  };
+  updates[`players/${oldUid}`] = null;
+
+  if (roomData.meta?.hostUid === oldUid) {
+    updates['meta/hostUid'] = firebaseUser.uid;
+  }
+
+  const seatUidOrder = Array.isArray(roomData.meta?.seatUidOrder)
+    ? roomData.meta.seatUidOrder.map(uid => uid === oldUid ? firebaseUser.uid : uid)
+    : [];
+
+  if (seatUidOrder.length) {
+    updates['meta/seatUidOrder'] = seatUidOrder;
+  }
+
+  updates['meta/updatedAt'] = Date.now();
+
+  await update(getRoomRef(roomCode), updates);
+  return true;
 }
 
 async function initFirebaseAuth() {
@@ -54,10 +97,19 @@ async function bootstrapFirebase() {
 
     const savedRoomCode = localStorage.getItem("catanCurrentRoomCode");
     if (savedRoomCode) {
-      const reattached = await restoreRoomMembership(savedRoomCode);
-      if (reattached) {
-        await subscribeToRoom(savedRoomCode);
-        await markPresenceConnected(savedRoomCode);
+      const roomSnapshot = await get(getRoomRef(savedRoomCode));
+      if (roomSnapshot.exists()) {
+        const roomData = roomSnapshot.val();
+        const restored = roomData?.players?.[auth.currentUser.uid]
+          ? true
+          : await reclaimRoomSeatIfNeeded(savedRoomCode, roomData);
+
+        if (restored) {
+          await subscribeToRoom(savedRoomCode);
+          await markPresenceConnected(savedRoomCode);
+        } else {
+          localStorage.removeItem("catanCurrentRoomCode");
+        }
       } else {
         localStorage.removeItem("catanCurrentRoomCode");
       }
@@ -293,80 +345,33 @@ function getOrderedRoomPlayers(roomData) {
   return Object.values(roomData?.players || {}).sort((a, b) => (a.seat ?? 99) - (b.seat ?? 99));
 }
 
-function getCurrentTurnUid() {
-  const remoteCurrentPlayer = currentRoomData?.gameState?.currentPlayer;
-  const currentIndex = Number.isInteger(remoteCurrentPlayer) ? remoteCurrentPlayer : state.currentPlayer;
+function getOnlineCurrentTurnIndex() {
+  const roomTurn = currentRoomData?.gameState?.currentPlayer;
+  if (Number.isInteger(roomTurn)) return roomTurn;
+  return Number.isInteger(state.currentPlayer) ? state.currentPlayer : 0;
+}
 
-  const directUid = currentRoomData?.meta?.seatUidOrder?.[currentIndex];
+function getCurrentTurnUid() {
+  const turnIndex = getOnlineCurrentTurnIndex();
+  const directUid = currentRoomData?.meta?.seatUidOrder?.[turnIndex];
   if (directUid) return directUid;
 
   const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
-  return orderedPlayers[currentIndex]?.uid || null;
-}
-
-function getOnlineCurrentPlayerIndex() {
-  const remoteCurrentPlayer = currentRoomData?.gameState?.currentPlayer;
-  return Number.isInteger(remoteCurrentPlayer) ? remoteCurrentPlayer : state.currentPlayer;
+  return orderedPlayers[turnIndex]?.uid || null;
 }
 
 function getOnlineCurrentTurnName() {
-  const index = getOnlineCurrentPlayerIndex();
-  const uid = currentRoomData?.meta?.seatUidOrder?.[index];
-  if (uid && currentRoomData?.players?.[uid]?.name) return currentRoomData.players[uid].name;
+  const turnIndex = getOnlineCurrentTurnIndex();
+  const directUid = currentRoomData?.meta?.seatUidOrder?.[turnIndex];
+  if (directUid && currentRoomData?.players?.[directUid]?.name) {
+    return currentRoomData.players[directUid].name;
+  }
+
+  const roomPlayerName = currentRoomData?.gameState?.players?.[turnIndex]?.name;
+  if (roomPlayerName) return roomPlayerName;
 
   const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
-  return orderedPlayers[index]?.name || "-";
-}
-
-async function restoreRoomMembership(roomCode) {
-  if (!firebaseUser) return false;
-
-  const roomSnapshot = await get(getRoomRef(roomCode));
-  if (!roomSnapshot.exists()) return false;
-
-  const roomData = roomSnapshot.val();
-  const players = roomData?.players || {};
-  const currentUid = firebaseUser.uid;
-  const clientId = getClientId();
-
-  if (players[currentUid]) {
-    const patch = {};
-    if (!players[currentUid].clientId) patch[`players/${currentUid}/clientId`] = clientId;
-    if (players[currentUid].connected !== true) patch[`players/${currentUid}/connected`] = true;
-    if (Object.keys(patch).length) {
-      patch["meta/updatedAt"] = Date.now();
-      await update(getRoomRef(roomCode), patch);
-    }
-    return true;
-  }
-
-  const previousEntry = Object.entries(players).find(([, player]) => player?.clientId === clientId);
-  if (!previousEntry) return false;
-
-  const [oldUid, oldPlayer] = previousEntry;
-  const patch = {
-    [`players/${currentUid}`]: {
-      ...oldPlayer,
-      uid: currentUid,
-      clientId,
-      connected: true,
-      name: localStorage.getItem("catanNickname") || oldPlayer.name || "Player"
-    },
-    [`players/${oldUid}`]: null,
-    "meta/updatedAt": Date.now()
-  };
-
-  if (roomData?.meta?.hostUid === oldUid) {
-    patch["meta/hostUid"] = currentUid;
-  }
-
-  const seatUidOrder = Array.isArray(roomData?.meta?.seatUidOrder) ? [...roomData.meta.seatUidOrder] : [];
-  if (seatUidOrder.length) {
-    patch["meta/seatUidOrder"] = seatUidOrder.map((uid) => uid === oldUid ? currentUid : uid);
-  }
-
-  await update(getRoomRef(roomCode), patch);
-  return true;
+  return orderedPlayers[turnIndex]?.name || '-';
 }
 
 function isMyTurnOnline() {
@@ -384,14 +389,16 @@ function updateRoomPanel() {
   els.roomStatusDisplay.textContent = currentRoomData?.meta?.status || "Offline";
   els.leaveRoomBtn.disabled = !currentRoomCode;
 
+  if (els.onlineCurrentTurnDisplay) {
+    if (currentRoomData?.meta?.status === "playing" && currentRoomData?.gameState) {
+      els.onlineCurrentTurnDisplay.textContent = getOnlineCurrentTurnName();
+    } else {
+      els.onlineCurrentTurnDisplay.textContent = "-";
+    }
+  }
+
   const inOnlineRoom = !!currentRoomCode;
   const roomStatus = currentRoomData?.meta?.status || "Offline";
-  const currentTurnIndex = getOnlineCurrentPlayerIndex();
-
-  if (els.onlineCurrentTurnDisplay) {
-    els.onlineCurrentTurnDisplay.textContent =
-      currentRoomData?.meta?.status === "playing" ? getOnlineCurrentTurnName() : "-";
-  }
 
   els.newGameBtn.disabled = inOnlineRoom;
   els.createRoomBtn.disabled = inOnlineRoom;
@@ -416,11 +423,7 @@ function updateRoomPanel() {
     els.newGameBtn.textContent = "New Game";
   }
 
-  if (inOnlineRoom) {
-    els.newGameBtn.style.display = "none";
-  } else {
-    els.newGameBtn.style.display = "";
-  }
+  els.newGameBtn.style.display = inOnlineRoom ? "none" : "";
 
   const players = getOrderedRoomPlayers(currentRoomData);
 
@@ -429,21 +432,19 @@ function updateRoomPanel() {
     return;
   }
 
+  const turnIndex = getOnlineCurrentTurnIndex();
+
   els.onlinePlayersList.innerHTML = players.map((player, index) => {
     const isYou = firebaseUser && player.uid === firebaseUser.uid;
     const connectionClass = player.connected ? "connected" : "disconnected";
     const connectionText = player.connected ? "Connected" : "Offline";
-    const isCurrentTurn = currentRoomData?.meta?.status === "playing" && index === currentTurnIndex;
+    const isCurrentTurn = currentRoomData?.meta?.status === "playing" && index === turnIndex;
 
     return `
       <div class="online-player-row">
         <div class="online-player-dot" style="background:${player.color}"></div>
         <div>
-          <div>
-            <strong>${escapeHtml(player.name)}</strong>
-            ${isYou ? `<span class="online-player-you">(You)</span>` : ""}
-            ${isCurrentTurn ? `<span class="online-player-you">• TURN</span>` : ""}
-          </div>
+          <div><strong>${escapeHtml(player.name)}</strong> ${isYou ? `<span class="online-player-you">(You)</span>` : ""} ${isCurrentTurn ? `<span class="online-player-you">• TURN</span>` : ""}</div>
           <div class="online-player-tag">Seat ${player.seat + 1}</div>
         </div>
         <div class="room-pill ${connectionClass}">${connectionText}</div>
@@ -501,10 +502,11 @@ async function subscribeToRoom(roomCode) {
       suppressRoomSync = true;
       applySerializedStateFromRoom(roomData.gameState);
       suppressRoomSync = false;
+      render();
+    } else {
+      updateRoomPanel();
     }
 
-    updateRoomPanel();
-    render();
     setLobbyStatusMessage(roomData);
   });
 
@@ -514,13 +516,8 @@ async function subscribeToRoom(roomCode) {
 async function markPresenceConnected(roomCode) {
   if (!firebaseUser) return;
 
-  const playerBaseRef = ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}`);
-  await update(playerBaseRef, {
-    connected: true,
-    clientId: getClientId()
-  });
-
   const connectedRef = ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}/connected`);
+  await set(connectedRef, true);
   onDisconnect(connectedRef).set(false);
 }
 
@@ -625,31 +622,46 @@ async function joinRoom() {
   }
 
   const roomData = snapshot.val();
+  const roomStatus = roomData.meta?.status;
+  const clientId = getClientId();
 
-  if (roomData.meta?.status !== "lobby") {
-    alertMsg("That room is no longer in the lobby.");
+  if (roomStatus !== "lobby" && roomStatus !== "playing") {
+    alertMsg("That room is no longer available.");
     return;
   }
 
   const players = getOrderedRoomPlayers(roomData);
   const existingPlayer = roomData.players?.[firebaseUser.uid];
+  const existingByClient = findRoomPlayerByClientId(roomData, clientId);
 
-  if (!existingPlayer && players.length >= 4) {
+  if (!existingPlayer && !existingByClient && players.length >= 4) {
     alertMsg("That room already has 4 players.");
     return;
   }
 
   if (existingPlayer) {
     await update(ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}`), {
+      clientId,
       name: nickname,
-      clientId: getClientId(),
+      connected: true
+    });
+  } else if (existingByClient) {
+    await reclaimRoomSeatIfNeeded(roomCode, roomData);
+    await update(ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}`), {
+      clientId,
+      name: nickname,
       connected: true
     });
   } else {
+    if (roomStatus !== "lobby") {
+      alertMsg("This match already started. Rejoin from the same device instead of joining as a new player.");
+      return;
+    }
+
     const nextSeat = players.length;
     await set(ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}`), {
       uid: firebaseUser.uid,
-      clientId: getClientId(),
+      clientId,
       name: nickname,
       seat: nextSeat,
       color: PLAYER_COLORS[nextSeat],
@@ -1353,7 +1365,8 @@ function renderSidebar() {
     return;
   }
 
-  els.turnLabel.textContent = state.gameStarted ? `• ${p.name}` : "";
+  const visibleTurnName = currentRoomCode ? getOnlineCurrentTurnName() : p.name;
+  els.turnLabel.textContent = state.gameStarted ? `• ${visibleTurnName}` : "";
   els.diceResult.textContent = state.dice
     ? `${state.dice[0]} + ${state.dice[1]} = ${state.dice[0] + state.dice[1]}`
     : "-";
@@ -1363,7 +1376,7 @@ function renderSidebar() {
       <div class="player-card">
         <div class="player-dot" style="background:${p.color}"></div>
         <div>
-          <div><strong>${escapeHtml(p.name)}</strong></div>
+          <div><strong>${escapeHtml(visibleTurnName)}</strong></div>
           <div class="cost-row">
             <span class="badge">Roads left: ${p.roadsLeft}</span>
             <span class="badge">Settlements left: ${p.settlementsLeft}</span>
