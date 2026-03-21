@@ -115,8 +115,496 @@ const els = {
   finishActionBtn: document.getElementById("finishActionBtn"),
   newGameBtn: document.getElementById("newGameBtn"),
   helpBtn: document.getElementById("helpBtn"),
-  devSummary: document.getElementById("devSummary")
+  devSummary: document.getElementById("devSummary"),
+
+  nicknameInput: document.getElementById("nicknameInput"),
+  createRoomBtn: document.getElementById("createRoomBtn"),
+  leaveRoomBtn: document.getElementById("leaveRoomBtn"),
+  joinRoomCodeInput: document.getElementById("joinRoomCodeInput"),
+  joinRoomBtn: document.getElementById("joinRoomBtn"),
+  roomCodeDisplay: document.getElementById("roomCodeDisplay"),
+  roomStatusDisplay: document.getElementById("roomStatusDisplay"),
+  startOnlineMatchBtn: document.getElementById("startOnlineMatchBtn"),
+  onlinePlayersList: document.getElementById("onlinePlayersList")
 };
+
+
+
+//Multiplayer Room Code
+const MAX_ACTIVE_ROOMS = 10;
+let currentRoomData = null;
+let suppressRoomSync = false;
+let roomSyncTimer = null;
+
+function generateRoomCode(length = 5) {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  for (let i = 0; i < length; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return code;
+}
+
+function getNickname() {
+  const name = (els.nicknameInput?.value || "").trim();
+  if (!name) {
+    alertMsg("Please enter your name first.");
+    return null;
+  }
+  if (name.length > 20) {
+    alertMsg("Name must be 20 characters or less.");
+    return null;
+  }
+  localStorage.setItem("catanNickname", name);
+  return name;
+}
+
+function loadNicknameFromStorage() {
+  const saved = localStorage.getItem("catanNickname");
+  if (saved && els.nicknameInput) {
+    els.nicknameInput.value = saved;
+  }
+}
+
+function getRoomRef(roomCode) {
+  return ref(db, `rooms/${roomCode}`);
+}
+
+function getSystemCountRef() {
+  return ref(db, "system/activeRoomCount");
+}
+
+function serializeBoard(board) {
+  if (!board) return null;
+
+  return {
+    ...board,
+    neighborsByVertex: Object.fromEntries(
+      [...board.neighborsByVertex.entries()].map(([key, value]) => [String(key), [...value]])
+    )
+  };
+}
+
+function deserializeBoard(board) {
+  if (!board) return null;
+
+  return {
+    ...board,
+    neighborsByVertex: new Map(
+      Object.entries(board.neighborsByVertex || {}).map(([key, value]) => [Number(key), new Set(value)])
+    )
+  };
+}
+
+function serializePlayers(players) {
+  return players.map(player => ({
+    ...player,
+    ports: [...player.ports]
+  }));
+}
+
+function deserializePlayers(players) {
+  return (players || []).map(player => ({
+    ...player,
+    ports: new Set(player.ports || [])
+  }));
+}
+
+function serializeStateForRoom() {
+  return {
+    gameStarted: state.gameStarted,
+    phase: state.phase,
+    board: serializeBoard(state.board),
+    players: serializePlayers(state.players),
+    currentPlayer: state.currentPlayer,
+    startPlayer: state.startPlayer,
+    setupRound: state.setupRound,
+    setupDirection: state.setupDirection,
+    setupOrderIndex: state.setupOrderIndex,
+    diceRolled: state.diceRolled,
+    dice: state.dice,
+    log: [...state.log],
+    pendingAction: state.pendingAction ? deepClone(state.pendingAction) : null,
+    robberNeedsDiscard: state.robberNeedsDiscard ? deepClone(state.robberNeedsDiscard) : null,
+    robberMoveReason: state.robberMoveReason,
+    devDeck: [...state.devDeck],
+    longestRoadOwner: state.longestRoadOwner,
+    largestArmyOwner: state.largestArmyOwner,
+    winner: state.winner,
+    tradeLock: state.tradeLock
+  };
+}
+
+function applySerializedStateFromRoom(remoteState) {
+  if (!remoteState) return;
+
+  state.gameStarted = !!remoteState.gameStarted;
+  state.phase = remoteState.phase || "idle";
+  state.board = deserializeBoard(remoteState.board);
+  state.players = deserializePlayers(remoteState.players);
+  state.currentPlayer = remoteState.currentPlayer ?? 0;
+  state.startPlayer = remoteState.startPlayer ?? 0;
+  state.setupRound = remoteState.setupRound ?? 1;
+  state.setupDirection = remoteState.setupDirection ?? 1;
+  state.setupOrderIndex = remoteState.setupOrderIndex ?? 0;
+  state.diceRolled = !!remoteState.diceRolled;
+  state.dice = remoteState.dice ?? null;
+  state.log = Array.isArray(remoteState.log) ? [...remoteState.log] : [];
+  state.pendingAction = remoteState.pendingAction ? deepClone(remoteState.pendingAction) : null;
+  state.robberNeedsDiscard = remoteState.robberNeedsDiscard ? deepClone(remoteState.robberNeedsDiscard) : null;
+  state.robberMoveReason = remoteState.robberMoveReason ?? null;
+  state.devDeck = Array.isArray(remoteState.devDeck) ? [...remoteState.devDeck] : [];
+  state.longestRoadOwner = remoteState.longestRoadOwner ?? null;
+  state.largestArmyOwner = remoteState.largestArmyOwner ?? null;
+  state.winner = remoteState.winner ?? null;
+  state.tradeLock = !!remoteState.tradeLock;
+}
+
+function getOrderedRoomPlayers(roomData) {
+  return Object.values(roomData?.players || {}).sort((a, b) => (a.seat ?? 99) - (b.seat ?? 99));
+}
+
+function getCurrentTurnUid() {
+  return currentRoomData?.meta?.seatUidOrder?.[state.currentPlayer] || null;
+}
+
+function isMyTurnOnline() {
+  if (!currentRoomCode) return true;
+  if (!firebaseUser) return false;
+  return getCurrentTurnUid() === firebaseUser.uid;
+}
+
+function isRoomHost() {
+  return !!(currentRoomData?.meta?.hostUid && firebaseUser && currentRoomData.meta.hostUid === firebaseUser.uid);
+}
+
+function updateRoomPanel() {
+  els.roomCodeDisplay.textContent = currentRoomCode || "-";
+  els.roomStatusDisplay.textContent = currentRoomData?.meta?.status || "Offline";
+  els.leaveRoomBtn.disabled = !currentRoomCode;
+
+  const canStart =
+    !!currentRoomCode &&
+    isRoomHost() &&
+    currentRoomData?.meta?.status === "lobby" &&
+    getOrderedRoomPlayers(currentRoomData).length >= 2;
+
+  els.startOnlineMatchBtn.disabled = !canStart;
+
+  const players = getOrderedRoomPlayers(currentRoomData);
+
+  if (!players.length) {
+    els.onlinePlayersList.innerHTML = `<div class="small-note">No players connected.</div>`;
+    return;
+  }
+
+  els.onlinePlayersList.innerHTML = players.map(player => {
+    const isYou = firebaseUser && player.uid === firebaseUser.uid;
+    const connectionClass = player.connected ? "connected" : "disconnected";
+    const connectionText = player.connected ? "Connected" : "Offline";
+
+    return `
+      <div class="online-player-row">
+        <div class="online-player-dot" style="background:${player.color}"></div>
+        <div>
+          <div><strong>${escapeHtml(player.name)}</strong> ${isYou ? `<span class="online-player-you">(You)</span>` : ""}</div>
+          <div class="online-player-tag">Seat ${player.seat + 1}</div>
+        </div>
+        <div class="room-pill ${connectionClass}">${connectionText}</div>
+      </div>
+    `;
+  }).join("");
+}
+
+function setLobbyStatusMessage(roomData) {
+  if (!roomData) return;
+
+  if (roomData.meta?.status === "lobby") {
+    setStatus("Online room ready. Wait for players, then the host starts the match.");
+    return;
+  }
+
+  if (roomData.meta?.status === "playing" && state.gameStarted) {
+    if (isMyTurnOnline()) {
+      setStatus(`${playerName(state.currentPlayer)}: it is your turn.`);
+    } else {
+      setStatus(`${playerName(state.currentPlayer)}: waiting for that player to act.`);
+    }
+  }
+}
+
+async function subscribeToRoom(roomCode) {
+  if (currentRoomUnsubscribe) {
+    currentRoomUnsubscribe();
+    currentRoomUnsubscribe = null;
+  }
+
+  currentRoomCode = roomCode;
+  localStorage.setItem("catanCurrentRoomCode", roomCode);
+
+  const roomRef = getRoomRef(roomCode);
+
+  currentRoomUnsubscribe = onValue(roomRef, (snapshot) => {
+    const roomData = snapshot.val();
+
+    if (!roomData) {
+      currentRoomData = null;
+      currentRoomCode = null;
+      localStorage.removeItem("catanCurrentRoomCode");
+      updateRoomPanel();
+      return;
+    }
+
+    currentRoomData = roomData;
+    updateRoomPanel();
+
+    if (roomData.gameState) {
+      suppressRoomSync = true;
+      applySerializedStateFromRoom(roomData.gameState);
+      render();
+      suppressRoomSync = false;
+    }
+
+    setLobbyStatusMessage(roomData);
+  });
+
+  updateRoomPanel();
+}
+
+async function markPresenceConnected(roomCode) {
+  if (!firebaseUser) return;
+
+  const connectedRef = ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}/connected`);
+  await set(connectedRef, true);
+  onDisconnect(connectedRef).set(false);
+}
+
+async function createRoom() {
+  const nickname = getNickname();
+  if (!nickname) return;
+  if (!firebaseUser) {
+    alertMsg("Firebase user is not ready yet.");
+    return;
+  }
+  if (currentRoomCode) {
+    alertMsg("Leave the current room first.");
+    return;
+  }
+
+  const countResult = await runTransaction(getSystemCountRef(), (current) => {
+    const safeCurrent = typeof current === "number" ? current : 0;
+    if (safeCurrent >= MAX_ACTIVE_ROOMS) return;
+    return safeCurrent + 1;
+  });
+
+  if (!countResult.committed) {
+    alertMsg("The server already has 10 active rooms. Try again later.");
+    return;
+  }
+
+  let roomCode = null;
+  let created = false;
+
+  for (let attempt = 0; attempt < 15; attempt++) {
+    const candidate = generateRoomCode();
+    const roomRef = getRoomRef(candidate);
+    const existing = await get(roomRef);
+
+    if (!existing.exists()) {
+      roomCode = candidate;
+      const playerData = {
+        uid: firebaseUser.uid,
+        name: nickname,
+        seat: 0,
+        color: PLAYER_COLORS[0],
+        connected: true,
+        joinedAt: Date.now()
+      };
+
+      await set(roomRef, {
+        meta: {
+          roomCode,
+          hostUid: firebaseUser.uid,
+          status: "lobby",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          maxPlayers: 4,
+          seatUidOrder: []
+        },
+        players: {
+          [firebaseUser.uid]: playerData
+        },
+        gameState: null
+      });
+
+      created = true;
+      break;
+    }
+  }
+
+  if (!created || !roomCode) {
+    await runTransaction(getSystemCountRef(), (current) => Math.max((current || 1) - 1, 0));
+    alertMsg("Could not create a unique room code. Please try again.");
+    return;
+  }
+
+  await subscribeToRoom(roomCode);
+  await markPresenceConnected(roomCode);
+}
+
+async function joinRoom() {
+  const nickname = getNickname();
+  if (!nickname) return;
+  if (!firebaseUser) {
+    alertMsg("Firebase user is not ready yet.");
+    return;
+  }
+  if (currentRoomCode) {
+    alertMsg("Leave the current room first.");
+    return;
+  }
+
+  const roomCode = (els.joinRoomCodeInput.value || "").trim().toUpperCase();
+  if (!roomCode) {
+    alertMsg("Enter a room code first.");
+    return;
+  }
+
+  const roomRef = getRoomRef(roomCode);
+  const snapshot = await get(roomRef);
+
+  if (!snapshot.exists()) {
+    alertMsg("Room not found.");
+    return;
+  }
+
+  const roomData = snapshot.val();
+
+  if (roomData.meta?.status !== "lobby") {
+    alertMsg("That room is no longer in the lobby.");
+    return;
+  }
+
+  const players = getOrderedRoomPlayers(roomData);
+  const existingPlayer = roomData.players?.[firebaseUser.uid];
+
+  if (!existingPlayer && players.length >= 4) {
+    alertMsg("That room already has 4 players.");
+    return;
+  }
+
+  if (existingPlayer) {
+    await update(ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}`), {
+      name: nickname,
+      connected: true
+    });
+  } else {
+    const nextSeat = players.length;
+    await set(ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}`), {
+      uid: firebaseUser.uid,
+      name: nickname,
+      seat: nextSeat,
+      color: PLAYER_COLORS[nextSeat],
+      connected: true,
+      joinedAt: Date.now()
+    });
+  }
+
+  await subscribeToRoom(roomCode);
+  await markPresenceConnected(roomCode);
+}
+
+async function leaveRoom() {
+  if (!currentRoomCode || !firebaseUser) return;
+
+  const roomCode = currentRoomCode;
+  const wasHost = isRoomHost();
+
+  if (currentRoomUnsubscribe) {
+    currentRoomUnsubscribe();
+    currentRoomUnsubscribe = null;
+  }
+
+  if (wasHost) {
+    await remove(getRoomRef(roomCode));
+    await runTransaction(getSystemCountRef(), (current) => Math.max((current || 1) - 1, 0));
+  } else {
+    await remove(ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}`));
+  }
+
+  currentRoomCode = null;
+  currentRoomData = null;
+  localStorage.removeItem("catanCurrentRoomCode");
+  updateRoomPanel();
+  setStatus("You left the online room.");
+}
+
+async function startOnlineMatch() {
+  if (!currentRoomCode || !currentRoomData) {
+    alertMsg("Create or join a room first.");
+    return;
+  }
+
+  if (!isRoomHost()) {
+    alertMsg("Only the host can start the online match.");
+    return;
+  }
+
+  const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
+
+  if (orderedPlayers.length < 2) {
+    alertMsg("You need at least 2 players to start.");
+    return;
+  }
+
+  startNewGame({
+    players: orderedPlayers.map(player => ({ name: player.name }))
+  });
+
+  const seatUidOrder = orderedPlayers.map(player => player.uid);
+
+  await update(getRoomRef(currentRoomCode), {
+    "meta/status": "playing",
+    "meta/updatedAt": Date.now(),
+    "meta/seatUidOrder": seatUidOrder,
+    gameState: serializeStateForRoom()
+  });
+}
+
+async function syncRoomStateNow() {
+  if (suppressRoomSync) return;
+  if (!currentRoomCode) return;
+  if (!currentRoomData) return;
+  if (currentRoomData.meta?.status !== "playing") return;
+  if (!firebaseUser) return;
+  if (!isMyTurnOnline()) return;
+
+  await update(getRoomRef(currentRoomCode), {
+    "meta/updatedAt": Date.now(),
+    gameState: serializeStateForRoom()
+  });
+}
+
+function scheduleRoomStateSync() {
+  if (suppressRoomSync) return;
+  if (!currentRoomCode) return;
+  if (!currentRoomData) return;
+  if (currentRoomData.meta?.status !== "playing") return;
+  if (!firebaseUser) return;
+  if (!isMyTurnOnline()) return;
+
+  clearTimeout(roomSyncTimer);
+  roomSyncTimer = setTimeout(() => {
+    syncRoomStateNow().catch((error) => {
+      console.error("Failed to sync room state:", error);
+    });
+  }, 60);
+}
+
+
+
+
+
 
 function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -346,6 +834,8 @@ function render() {
   renderSidebar();
   renderLog();
   renderControls();
+  updateRoomPanel();
+  scheduleRoomStateSync();
 }
 
 
@@ -522,6 +1012,8 @@ function renderBoard() {
   svg.innerHTML = "";
   if (!state.board) return;
 
+  const canInteractOnline = !currentRoomCode || isMyTurnOnline();
+
   state.board.hexes.forEach(hex => {
     const points = hex.corners.map(p => `${p.x},${p.y}`).join(" ");
     const clip = document.createElementNS("http://www.w3.org/2000/svg", "clipPath");
@@ -536,7 +1028,7 @@ function renderBoard() {
     border.setAttribute("fill", RESOURCE_COLORS[hex.terrain]);
     border.setAttribute("class", "hex-base");
     border.dataset.hexId = hex.id;
-    if (state.pendingAction?.type === "moveRobber" && !hex.robber) {
+    if (canInteractOnline && state.pendingAction?.type === "moveRobber" && !hex.robber) {
       border.style.cursor = "pointer";
       border.addEventListener("click", () => attemptMoveRobber(hex.id));
     }
@@ -551,7 +1043,7 @@ function renderBoard() {
     img.setAttribute("clip-path", `url(#hex-clip-${hex.id})`);
     img.setAttribute("preserveAspectRatio", "xMidYMid slice");
     img.setAttribute("class", "hex-image");
-    if (state.pendingAction?.type === "moveRobber" && !hex.robber) {
+    if (canInteractOnline && state.pendingAction?.type === "moveRobber" && !hex.robber) {
       img.style.cursor = "pointer";
       img.addEventListener("click", () => attemptMoveRobber(hex.id));
     }
@@ -614,7 +1106,7 @@ function renderBoard() {
     hit.setAttribute("x1", a.x); hit.setAttribute("y1", a.y);
     hit.setAttribute("x2", b.x); hit.setAttribute("y2", b.y);
     let edgeClass = "edge-hit";
-    if (state.pendingAction?.type === "buildRoad") {
+    if (canInteractOnline && state.pendingAction?.type === "buildRoad") {
       edgeClass += validRoadSpot(edge.id, state.currentPlayer) ? " edge-hit-active" : " edge-hit-disabled";
       hit.addEventListener("click", () => attemptBuildRoad(edge.id));
     }
@@ -641,10 +1133,10 @@ function renderBoard() {
     const hit = document.createElementNS("http://www.w3.org/2000/svg", "circle");
     hit.setAttribute("cx", v.x); hit.setAttribute("cy", v.y); hit.setAttribute("r", 12);
     let vertexClass = "vertex";
-    if (state.pendingAction?.type === "buildSettlement") {
+    if (canInteractOnline && state.pendingAction?.type === "buildSettlement") {
       vertexClass += validSettlementSpot(v.id, state.currentPlayer, state.phase === "setup") ? " vertex-active" : " vertex-disabled";
       hit.addEventListener("click", () => attemptBuildSettlement(v.id));
-    } else if (state.pendingAction?.type === "buildCity") {
+    } else if (canInteractOnline && state.pendingAction?.type === "buildCity") {
       const canUpgrade = !!(v.building && v.building.owner === state.currentPlayer && v.building.type === "settlement");
       vertexClass += canUpgrade ? " vertex-active" : " vertex-disabled";
       hit.addEventListener("click", () => attemptBuildCity(v.id));
@@ -718,9 +1210,21 @@ function renderLog() {
 
 function renderControls() {
   const isActive = state.gameStarted && !state.winner;
-  els.rollBtn.disabled = !isActive || state.phase !== "play" || state.diceRolled || !!state.pendingAction || state.tradeLock;
-  els.endTurnBtn.disabled = !isActive || state.phase !== "play" || !state.diceRolled || !!state.pendingAction || !!state.robberNeedsDiscard || state.tradeLock;
-  els.finishActionBtn.disabled = !state.pendingAction;
+  const onlineTurnBlocked = !!currentRoomCode && !isMyTurnOnline();
+
+  els.rollBtn.disabled =
+    !isActive || state.phase !== "play" || state.diceRolled || !!state.pendingAction || state.tradeLock || onlineTurnBlocked;
+
+  els.endTurnBtn.disabled =
+    !isActive || state.phase !== "play" || !state.diceRolled || !!state.pendingAction || !!state.robberNeedsDiscard || state.tradeLock || onlineTurnBlocked;
+
+  els.finishActionBtn.disabled = !state.pendingAction || onlineTurnBlocked;
+
+  document.querySelectorAll('[data-action]').forEach(btn => {
+    btn.disabled = !isActive || onlineTurnBlocked;
+  });
+
+  els.newGameBtn.disabled = !!currentRoomCode;
 }
 
 function escapeHtml(str) {
@@ -1472,6 +1976,22 @@ function openModal({ title, body, actions = [], onRender, closeDisabled = false 
 function closeModal() { els.modalRoot.innerHTML = ""; }
 
 function bindEvents() {
+
+    els.createRoomBtn.addEventListener("click", createRoom);
+  els.joinRoomBtn.addEventListener("click", joinRoom);
+  els.leaveRoomBtn.addEventListener("click", leaveRoom);
+  els.startOnlineMatchBtn.addEventListener("click", startOnlineMatch);
+
+  els.nicknameInput.addEventListener("change", () => {
+    localStorage.setItem("catanNickname", els.nicknameInput.value.trim());
+  });
+
+  els.joinRoomCodeInput.addEventListener("input", () => {
+    els.joinRoomCodeInput.value = els.joinRoomCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  });
+
+
+
   els.rollBtn.addEventListener("click", attemptRollDice);
   els.endTurnBtn.addEventListener("click", endTurn);
   els.newGameBtn.addEventListener("click", openNewGameModal);
@@ -1516,6 +2036,32 @@ function bindEvents() {
     });
   });
 }
+
+
+async function bootstrapFirebase() {
+  try {
+    await initFirebaseAuth();
+    loadNicknameFromStorage();
+    updateRoomPanel();
+
+    const savedRoomCode = localStorage.getItem("catanCurrentRoomCode");
+    if (savedRoomCode) {
+      const roomSnapshot = await get(getRoomRef(savedRoomCode));
+      if (roomSnapshot.exists() && roomSnapshot.val()?.players?.[auth.currentUser.uid]) {
+        await subscribeToRoom(savedRoomCode);
+        await markPresenceConnected(savedRoomCode);
+      } else {
+        localStorage.removeItem("catanCurrentRoomCode");
+      }
+    }
+
+    console.log("Firebase is ready");
+  } catch (error) {
+    console.error("Firebase initialization failed:", error);
+    alert("Firebase failed to initialize. Open the browser console with F12 and check the error.");
+  }
+}
+
 
 bindEvents();
 openHelp();

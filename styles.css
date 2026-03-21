@@ -352,3 +352,87 @@ input, select {
   .topbar, .board-header, .board-footer { flex-direction: column; align-items: stretch; }
   .action-grid, .form-grid { grid-template-columns: 1fr; }
 }
+
+
+
+
+.lobby-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.room-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.join-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.room-meta {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #0f172a;
+  border: 1px solid var(--line);
+  font-size: 14px;
+}
+
+.online-players-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.online-player-row {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #0f172a;
+  border: 1px solid var(--line);
+  font-size: 14px;
+}
+
+.online-player-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+}
+
+.online-player-tag {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.online-player-you {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.room-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 76px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #1e293b;
+  border: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.room-pill.connected {
+  color: #86efac;
+}
+
+.room-pill.disconnected {
+  color: #fca5a5;
+}

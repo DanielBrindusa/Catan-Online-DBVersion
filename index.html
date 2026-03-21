@@ -44,6 +44,45 @@
       </section>
 
       <aside class="sidebar">
+        <section class="card panel lobby-panel">
+          <h2>Online Room</h2>
+
+          <label>
+            Your name
+            <input id="nicknameInput" type="text" maxlength="20" placeholder="Enter your name" />
+          </label>
+
+          <div class="room-actions-grid">
+            <button id="createRoomBtn">Create Room</button>
+            <button id="leaveRoomBtn" class="secondary" disabled>Leave Room</button>
+          </div>
+
+          <label>
+            Join room code
+            <div class="join-row">
+              <input id="joinRoomCodeInput" type="text" maxlength="8" placeholder="e.g. A7KQ9" />
+              <button id="joinRoomBtn">Join</button>
+            </div>
+          </label>
+
+          <div class="room-meta">
+            <div><strong>Room code:</strong> <span id="roomCodeDisplay">-</span></div>
+            <div><strong>Status:</strong> <span id="roomStatusDisplay">Offline</span></div>
+          </div>
+
+          <div class="room-actions-grid">
+            <button id="startOnlineMatchBtn" disabled>Start Online Match</button>
+          </div>
+
+          <div>
+            <strong>Players</strong>
+            <div id="onlinePlayersList" class="online-players-list"></div>
+          </div>
+
+          <p class="small-note">
+            Host creates the room, friends enter the room code on their device, then the host starts the match.
+          </p>
+        </section>
         <section class="card panel current-player-panel">
           <h2>Current Player</h2>
           <div id="currentPlayerCard"></div>
