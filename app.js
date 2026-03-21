@@ -96,23 +96,29 @@ async function bootstrapFirebase() {
     updateRoomPanel();
 
     const savedRoomCode = localStorage.getItem("catanCurrentRoomCode");
-    if (savedRoomCode) {
+    const savedSessionToken = loadCurrentRoomSession();
+
+    if (savedRoomCode && savedSessionToken) {
       const roomSnapshot = await get(getRoomRef(savedRoomCode));
 
       if (roomSnapshot.exists()) {
         const roomData = roomSnapshot.val();
-        const players = roomData?.players || {};
-        const hasCurrentUid = !!players[auth.currentUser.uid];
+        const currentPlayer = roomData?.players?.[auth.currentUser.uid];
 
-        if (hasCurrentUid) {
+        if (currentPlayer && currentPlayer.sessionToken === savedSessionToken) {
           await subscribeToRoom(savedRoomCode);
           await markPresenceConnected(savedRoomCode);
         } else {
           localStorage.removeItem("catanCurrentRoomCode");
+          clearCurrentRoomSession();
         }
       } else {
         localStorage.removeItem("catanCurrentRoomCode");
+        clearCurrentRoomSession();
       }
+    } else {
+      localStorage.removeItem("catanCurrentRoomCode");
+      clearCurrentRoomSession();
     }
 
     console.log("Firebase is ready");
@@ -212,6 +218,27 @@ const MAX_ACTIVE_ROOMS = 10;
 let currentRoomData = null;
 let suppressRoomSync = false;
 let roomSyncTimer = null;
+let currentRoomSessionToken = null;
+
+function generateSessionToken() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function clearCurrentRoomSession() {
+  currentRoomSessionToken = null;
+  localStorage.removeItem("catanCurrentRoomSessionToken");
+}
+
+function setCurrentRoomSession(token) {
+  currentRoomSessionToken = token;
+  localStorage.setItem("catanCurrentRoomSessionToken", token);
+}
+
+function loadCurrentRoomSession() {
+  const token = localStorage.getItem("catanCurrentRoomSessionToken");
+  currentRoomSessionToken = token || null;
+  return currentRoomSessionToken;
+}
 
 if (!localStorage.getItem("catanClientId")) {
   localStorage.setItem("catanClientId", crypto.randomUUID());
@@ -251,8 +278,8 @@ function getRoomRef(roomCode) {
   return ref(db, `rooms/${roomCode}`);
 }
 
-function getSystemCountRef() {
-  return ref(db, "system/activeRoomCount");
+function getPlayerRef(roomCode, uid) {
+  return ref(db, `rooms/${roomCode}/players/${uid}`);
 }
 
 function getPlayerRef(roomCode, uid) {
@@ -547,13 +574,14 @@ async function subscribeToRoom(roomCode) {
 
   const roomRef = getRoomRef(roomCode);
 
-  currentRoomUnsubscribe = onValue(roomRef, (snapshot) => {
+  currentRoomUnsubscribe = onValue(roomRef, async (snapshot) => {
     const roomData = snapshot.val();
 
     if (!roomData) {
       currentRoomData = null;
       currentRoomCode = null;
       localStorage.removeItem("catanCurrentRoomCode");
+      clearCurrentRoomSession();
       updateRoomPanel();
       return;
     }
@@ -569,10 +597,6 @@ async function subscribeToRoom(roomCode) {
     updateRoomPanel();
     render();
     setLobbyStatusMessage(roomData);
-
-    cleanupRoomPresence(roomCode, roomData).catch((error) => {
-      console.error("cleanupRoomPresence failed:", error);
-    });
   });
 
   updateRoomPanel();
@@ -581,9 +605,26 @@ async function subscribeToRoom(roomCode) {
 async function markPresenceConnected(roomCode) {
   if (!firebaseUser || !roomCode) return;
 
-  const connectedRef = ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}/connected`);
-  await set(connectedRef, true);
-  await onDisconnect(connectedRef).set(false);
+  const playerRef = getPlayerRef(roomCode, firebaseUser.uid);
+  const snapshot = await get(playerRef);
+
+  if (!snapshot.exists()) return;
+
+  const playerData = snapshot.val();
+  const savedSessionToken = currentRoomSessionToken || loadCurrentRoomSession();
+
+  if (!savedSessionToken) return;
+  if (playerData.sessionToken !== savedSessionToken) return;
+
+  await update(playerRef, {
+    connected: true,
+    lastSeenAt: Date.now()
+  });
+
+  onDisconnect(playerRef).update({
+    connected: false,
+    lastSeenAt: Date.now()
+  });
 }
 
 async function createRoom() {
@@ -619,6 +660,9 @@ async function createRoom() {
 
     if (!existing.exists()) {
       roomCode = candidate;
+      const sessionToken = generateSessionToken();
+      setCurrentRoomSession(sessionToken);
+
       const playerData = {
         uid: firebaseUser.uid,
         name: nickname,
@@ -626,7 +670,7 @@ async function createRoom() {
         color: PLAYER_COLORS[0],
         connected: true,
         joinedAt: Date.now(),
-        clientId: localStorage.getItem("catanClientId") || crypto.randomUUID()
+        sessionToken
       };
 
       if (!localStorage.getItem("catanClientId")) {
@@ -709,10 +753,13 @@ async function joinRoom() {
   }
 
   if (existingPlayer) {
+    const sessionToken = generateSessionToken();
+    setCurrentRoomSession(sessionToken);
+
     await update(ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}`), {
-      clientId,
       name: nickname,
-      connected: true
+      connected: true,
+      sessionToken
     });
   } else if (existingByClient) {
     await reclaimRoomSeatIfNeeded(roomCode, roomData);
@@ -722,11 +769,8 @@ async function joinRoom() {
       connected: true
     });
   } else {
-    let clientId = localStorage.getItem("catanClientId");
-    if (!clientId) {
-      clientId = crypto.randomUUID();
-      localStorage.setItem("catanClientId", clientId);
-    }
+    const sessionToken = generateSessionToken();
+    setCurrentRoomSession(sessionToken);
 
     const nextSeat = players.length;
     await set(ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}`), {
@@ -736,7 +780,7 @@ async function joinRoom() {
       color: PLAYER_COLORS[nextSeat],
       connected: true,
       joinedAt: Date.now(),
-      clientId
+      sessionToken
     });
   }
 
@@ -748,26 +792,31 @@ async function leaveRoom() {
   if (!currentRoomCode || !firebaseUser) return;
 
   const roomCode = currentRoomCode;
+  const wasHost = isRoomHost();
+  const playerRef = getPlayerRef(roomCode, firebaseUser.uid);
 
   if (currentRoomUnsubscribe) {
     currentRoomUnsubscribe();
     currentRoomUnsubscribe = null;
   }
 
-  await remove(getPlayerRef(roomCode, firebaseUser.uid));
+  try {
+    await onDisconnect(playerRef).cancel();
+  } catch (e) {
+    console.warn("Could not cancel onDisconnect for player:", e);
+  }
 
-  const roomSnapshot = await get(getRoomRef(roomCode));
-
-  if (!roomSnapshot.exists()) {
-    await decrementActiveRoomCountSafe();
+  if (wasHost) {
+    await remove(getRoomRef(roomCode));
+    await runTransaction(getSystemCountRef(), (current) => Math.max((current || 1) - 1, 0));
   } else {
-    const roomData = roomSnapshot.val();
-    await cleanupRoomPresence(roomCode, roomData);
+    await remove(playerRef);
   }
 
   currentRoomCode = null;
   currentRoomData = null;
   localStorage.removeItem("catanCurrentRoomCode");
+  clearCurrentRoomSession();
   updateRoomPanel();
   setStatus("You left the online room.");
 }
