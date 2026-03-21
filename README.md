@@ -34,3 +34,17 @@ Open `index.html` in a browser.
 
 ## Important note
 This project is a fan-made, unlicensed implementation for learning/personal use. It is not affiliated with or endorsed by CATAN GmbH, Catan Studio, or Asmodee.
+
+
+## Custom hex tile art
+
+This build supports image-based terrain tiles from `assets/hexes/`.
+Included files:
+- `wood.svg`
+- `brick.svg`
+- `sheep.svg`
+- `wheat.svg`
+- `ore.svg`
+- `desert.svg`
+
+To replace them with your own art, keep the same filenames. Any square image works.

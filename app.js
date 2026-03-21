@@ -295,30 +295,71 @@ function render() {
   renderControls();
 }
 
+
+function terrainAssetPath(terrain) {
+  return `assets/hexes/${terrain}.svg`;
+}
+
 function renderBoard() {
   const svg = els.board;
   svg.innerHTML = "";
   if (!state.board) return;
 
   state.board.hexes.forEach(hex => {
-    const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
-    poly.setAttribute("points", hex.corners.map(p => `${p.x},${p.y}`).join(" "));
-    poly.setAttribute("fill", RESOURCE_COLORS[hex.terrain]);
-    poly.setAttribute("stroke", "#f8fafc");
-    poly.setAttribute("stroke-width", "3");
-    poly.dataset.hexId = hex.id;
+    const points = hex.corners.map(p => `${p.x},${p.y}`).join(" ");
+    const clip = document.createElementNS("http://www.w3.org/2000/svg", "clipPath");
+    clip.setAttribute("id", `hex-clip-${hex.id}`);
+    const clipPoly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+    clipPoly.setAttribute("points", points);
+    clip.appendChild(clipPoly);
+    svg.appendChild(clip);
+
+    const border = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+    border.setAttribute("points", points);
+    border.setAttribute("fill", RESOURCE_COLORS[hex.terrain]);
+    border.setAttribute("class", "hex-base");
+    border.dataset.hexId = hex.id;
     if (state.pendingAction?.type === "moveRobber" && !hex.robber) {
-      poly.style.cursor = "pointer";
-      poly.addEventListener("click", () => attemptMoveRobber(hex.id));
+      border.style.cursor = "pointer";
+      border.addEventListener("click", () => attemptMoveRobber(hex.id));
     }
-    svg.appendChild(poly);
+    svg.appendChild(border);
+
+    const img = document.createElementNS("http://www.w3.org/2000/svg", "image");
+    img.setAttribute("href", terrainAssetPath(hex.terrain));
+    img.setAttribute("x", hex.center.x - 94);
+    img.setAttribute("y", hex.center.y - 94);
+    img.setAttribute("width", 188);
+    img.setAttribute("height", 188);
+    img.setAttribute("clip-path", `url(#hex-clip-${hex.id})`);
+    img.setAttribute("preserveAspectRatio", "xMidYMid slice");
+    img.setAttribute("class", "hex-image");
+    if (state.pendingAction?.type === "moveRobber" && !hex.robber) {
+      img.style.cursor = "pointer";
+      img.addEventListener("click", () => attemptMoveRobber(hex.id));
+    }
+    svg.appendChild(img);
+
+    const overlay = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+    overlay.setAttribute("points", points);
+    overlay.setAttribute("class", "hex-overlay");
+    svg.appendChild(overlay);
+
+    const labelBackdrop = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    labelBackdrop.setAttribute("x", hex.center.x - 44);
+    labelBackdrop.setAttribute("y", hex.center.y - 34);
+    labelBackdrop.setAttribute("width", 88);
+    labelBackdrop.setAttribute("height", 24);
+    labelBackdrop.setAttribute("rx", 12);
+    labelBackdrop.setAttribute("class", "hex-label-backdrop");
+    svg.appendChild(labelBackdrop);
 
     const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
     label.setAttribute("x", hex.center.x);
-    label.setAttribute("y", hex.center.y - 10);
-    label.setAttribute("class", "hex-label");
+    label.setAttribute("y", hex.center.y - 22);
+    label.setAttribute("class", "hex-label terrain-name");
     label.textContent = hex.terrain === "desert" ? "Desert" : capitalize(hex.terrain);
-    label.setAttribute("font-size", "18");
+    label.setAttribute("font-size", "15");
     svg.appendChild(label);
 
     if (hex.number) {
@@ -332,7 +373,7 @@ function renderBoard() {
       const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
       t.setAttribute("x", hex.center.x);
       t.setAttribute("y", hex.center.y + 26);
-      t.setAttribute("class", "hex-label");
+      t.setAttribute("class", "hex-label token-text");
       t.textContent = hex.number;
       svg.appendChild(t);
     }
