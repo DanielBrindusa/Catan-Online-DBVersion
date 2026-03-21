@@ -379,9 +379,14 @@ function renderBoard() {
     }
 
     if (hex.robber) {
-      const robber = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      robber.setAttribute("d", `M ${hex.center.x-12} ${hex.center.y-58} q 12 -24 24 0 v 22 l 10 30 h -44 l 10 -30 z`);
-      robber.setAttribute("class", "robber");
+      const robber = document.createElementNS("http://www.w3.org/2000/svg", "image");
+      robber.setAttribute("href", "assets/robber.png");
+      robber.setAttribute("x", hex.center.x - 42);
+      robber.setAttribute("y", hex.center.y - 78);
+      robber.setAttribute("width", 84);
+      robber.setAttribute("height", 84);
+      robber.setAttribute("preserveAspectRatio", "xMidYMid meet");
+      robber.setAttribute("class", "robber robber-image");
       svg.appendChild(robber);
     }
   });
