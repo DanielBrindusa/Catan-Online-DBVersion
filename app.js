@@ -297,7 +297,7 @@ function render() {
 
 
 function terrainAssetPath(terrain) {
-  return `assets/hexes/${terrain}.svg`;
+  return `assets/hexes/${terrain}.png`; // use uploaded PNG terrain tiles
 }
 
 function renderBoard() {
