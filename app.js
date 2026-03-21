@@ -272,6 +272,14 @@ function applySerializedStateFromRoom(remoteState) {
   state.largestArmyOwner = remoteState.largestArmyOwner ?? null;
   state.winner = remoteState.winner ?? null;
   state.tradeLock = !!remoteState.tradeLock;
+
+  if (state.phase === "setup" && !state.pendingAction) {
+    state.pendingAction = {
+      type: "buildSettlement",
+      free: true,
+      source: "setup"
+    };
+  }
 }
 
 function getOrderedRoomPlayers(roomData) {
@@ -605,20 +613,38 @@ async function startOnlineMatch() {
     return;
   }
 
+  // ensure players are in same order as firebase seats
+  const orderedPlayersSorted = orderedPlayers.sort((a,b)=>a.seat-b.seat);
+
   startNewGame({
-    players: orderedPlayers.map(player => ({ name: player.name }))
+    players: orderedPlayersSorted.map(player => ({ name: player.name }))
   });
 
-  // For online play, always let seat 0 / host start setup first.
+  // ensure player order matches UID order
+  const seatUidOrder = orderedPlayersSorted.map(player => player.uid);
+
+  // force setup start
   state.startPlayer = 0;
   state.currentPlayer = 0;
   state.setupRound = 1;
   state.setupDirection = 1;
   state.setupOrderIndex = 0;
-  state.pendingAction = { type: "buildSettlement", free: true, source: "setup" };
+
+  // VERY IMPORTANT → must exist or board is not clickable
+  state.pendingAction = {
+    type: "buildSettlement",
+    free: true,
+    source: "setup"
+  };
+
   setStatus(`${playerName(state.currentPlayer)}: place your first settlement.`);
 
-  const seatUidOrder = orderedPlayers.map(player => player.uid);
+  await update(getRoomRef(currentRoomCode), {
+    "meta/status": "playing",
+    "meta/updatedAt": Date.now(),
+    "meta/seatUidOrder": seatUidOrder,
+    gameState: serializeStateForRoom()
+  });
 
   await update(getRoomRef(currentRoomCode), {
     "meta/status": "playing",
