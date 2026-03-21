@@ -300,6 +300,48 @@ function terrainAssetPath(terrain) {
   return `assets/hexes/${terrain}.png`; // use uploaded PNG terrain tiles
 }
 
+function roadAssetPath() {
+  return "assets/road.png";
+}
+
+function drawRoadSprite(svg, a, b, playerColor) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+  const midX = (a.x + b.x) / 2;
+  const midY = (a.y + b.y) / 2;
+
+  const shadow = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  shadow.setAttribute("x1", a.x);
+  shadow.setAttribute("y1", a.y);
+  shadow.setAttribute("x2", b.x);
+  shadow.setAttribute("y2", b.y);
+  shadow.setAttribute("class", "road-shadow");
+  svg.appendChild(shadow);
+
+  const underlay = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  underlay.setAttribute("x1", a.x);
+  underlay.setAttribute("y1", a.y);
+  underlay.setAttribute("x2", b.x);
+  underlay.setAttribute("y2", b.y);
+  underlay.setAttribute("class", "road-underlay");
+  underlay.setAttribute("stroke", playerColor);
+  svg.appendChild(underlay);
+
+  const img = document.createElementNS("http://www.w3.org/2000/svg", "image");
+  img.setAttribute("href", roadAssetPath());
+  img.setAttribute("x", midX - len / 2);
+  img.setAttribute("y", midY - 14);
+  img.setAttribute("width", len);
+  img.setAttribute("height", 28);
+  img.setAttribute("preserveAspectRatio", "none");
+  img.setAttribute("transform", `rotate(${angle} ${midX} ${midY})`);
+  img.setAttribute("class", "road-image");
+  svg.appendChild(img);
+}
+
+
 function renderBoard() {
   const svg = els.board;
   svg.innerHTML = "";
@@ -405,12 +447,7 @@ function renderBoard() {
     svg.appendChild(hit);
 
     if (edge.owner !== null) {
-      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-      line.setAttribute("x1", a.x); line.setAttribute("y1", a.y);
-      line.setAttribute("x2", b.x); line.setAttribute("y2", b.y);
-      line.setAttribute("class", "edge-drawn");
-      line.setAttribute("stroke", state.players[edge.owner].color);
-      svg.appendChild(line);
+      drawRoadSprite(svg, a, b, state.players[edge.owner].color);
     }
   });
 

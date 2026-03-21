@@ -251,6 +251,26 @@ button:disabled { opacity: .5; cursor: not-allowed; }
   stroke-width: 10;
   stroke-linecap: round;
 }
+
+.road-shadow,
+.road-underlay,
+.road-image {
+  pointer-events: none;
+}
+.road-shadow {
+  stroke: rgba(15,23,42,0.42);
+  stroke-width: 16;
+  stroke-linecap: round;
+}
+.road-underlay {
+  stroke-width: 12;
+  stroke-linecap: round;
+  opacity: 0.48;
+}
+.road-image {
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.38));
+}
+
 .settlement-shape, .city-shape {
   stroke: #0f172a;
   stroke-width: 2;
