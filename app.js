@@ -283,34 +283,29 @@ function getOrderedRoomPlayers(roomData) {
   return Object.values(roomData?.players || {}).sort((a, b) => (a.seat ?? 99) - (b.seat ?? 99));
 }
 
-function getEffectiveCurrentPlayerIndex() {
-  if (typeof currentRoomData?.gameState?.currentPlayer === "number") {
-    return currentRoomData.gameState.currentPlayer;
-  }
-  return state.currentPlayer ?? 0;
+function getOnlineTurnIndex(roomData = currentRoomData) {
+  const idx = roomData?.gameState?.currentPlayer;
+  if (Number.isInteger(idx)) return idx;
+  return Number.isInteger(state.currentPlayer) ? state.currentPlayer : 0;
 }
 
-function getCurrentTurnUid() {
-  const currentPlayerIndex = getEffectiveCurrentPlayerIndex();
-  const directUid = currentRoomData?.meta?.seatUidOrder?.[currentPlayerIndex];
+function getCurrentTurnUid(roomData = currentRoomData) {
+  const turnIndex = getOnlineTurnIndex(roomData);
+  const directUid = roomData?.meta?.seatUidOrder?.[turnIndex];
   if (directUid) return directUid;
 
-  const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
-  return orderedPlayers[currentPlayerIndex]?.uid || null;
+  const orderedPlayers = getOrderedRoomPlayers(roomData);
+  return orderedPlayers[turnIndex]?.uid || null;
 }
 
-function getOnlineCurrentTurnName() {
-  const currentPlayerIndex = getEffectiveCurrentPlayerIndex();
-  const directUid = currentRoomData?.meta?.seatUidOrder?.[currentPlayerIndex];
-  if (directUid && currentRoomData?.players?.[directUid]?.name) {
-    return currentRoomData.players[directUid].name;
+function getOnlineCurrentTurnName(roomData = currentRoomData) {
+  const turnIndex = getOnlineTurnIndex(roomData);
+  const uid = roomData?.meta?.seatUidOrder?.[turnIndex];
+  if (uid && roomData?.players?.[uid]?.name) {
+    return roomData.players[uid].name;
   }
-
-  if (currentRoomData?.gameState?.players?.[currentPlayerIndex]?.name) {
-    return currentRoomData.gameState.players[currentPlayerIndex].name;
-  }
-
-  return state.players[currentPlayerIndex]?.name || "-";
+  const orderedPlayers = getOrderedRoomPlayers(roomData);
+  return orderedPlayers[turnIndex]?.name || state.players[turnIndex]?.name || "-";
 }
 
 function isMyTurnOnline() {
@@ -328,13 +323,13 @@ function updateRoomPanel() {
   els.roomStatusDisplay.textContent = currentRoomData?.meta?.status || "Offline";
   els.leaveRoomBtn.disabled = !currentRoomCode;
 
+  if (els.onlineCurrentTurnDisplay) {
+    const showTurn = !!currentRoomCode && currentRoomData?.meta?.status === "playing";
+    els.onlineCurrentTurnDisplay.textContent = showTurn ? getOnlineCurrentTurnName(currentRoomData) : "-";
+  }
+
   const inOnlineRoom = !!currentRoomCode;
   const roomStatus = currentRoomData?.meta?.status || "Offline";
-  const currentTurnName = currentRoomData?.meta?.status === "playing" ? getOnlineCurrentTurnName() : "-";
-
-  if (els.onlineCurrentTurnDisplay) {
-    els.onlineCurrentTurnDisplay.textContent = currentTurnName;
-  }
 
   els.newGameBtn.disabled = inOnlineRoom;
   els.createRoomBtn.disabled = inOnlineRoom;
@@ -366,24 +361,24 @@ function updateRoomPanel() {
   }
 
   const players = getOrderedRoomPlayers(currentRoomData);
-  const currentTurnUid = currentRoomData?.meta?.status === "playing" ? getCurrentTurnUid() : null;
 
   if (!players.length) {
     els.onlinePlayersList.innerHTML = `<div class="small-note">No players connected.</div>`;
     return;
   }
 
+  const turnIndex = getOnlineTurnIndex(currentRoomData);
   els.onlinePlayersList.innerHTML = players.map(player => {
     const isYou = firebaseUser && player.uid === firebaseUser.uid;
     const connectionClass = player.connected ? "connected" : "disconnected";
     const connectionText = player.connected ? "Connected" : "Offline";
-    const isCurrentTurn = currentTurnUid && player.uid === currentTurnUid;
+    const isTurn = currentRoomData?.meta?.status === "playing" && player.seat === turnIndex;
 
     return `
       <div class="online-player-row">
         <div class="online-player-dot" style="background:${player.color}"></div>
         <div>
-          <div><strong>${escapeHtml(player.name)}</strong> ${isYou ? `<span class="online-player-you">(You)</span>` : ""} ${isCurrentTurn ? `<span class="online-player-you">• TURN</span>` : ""}</div>
+          <div><strong>${escapeHtml(player.name)}</strong> ${isYou ? `<span class="online-player-you">(You)</span>` : ""} ${isTurn ? `<span class="online-player-you">• TURN</span>` : ""}</div>
           <div class="online-player-tag">Seat ${player.seat + 1}</div>
         </div>
         <div class="room-pill ${connectionClass}">${connectionText}</div>
@@ -443,8 +438,8 @@ async function subscribeToRoom(roomCode) {
       suppressRoomSync = false;
     }
 
-    render();
     updateRoomPanel();
+    render();
     setLobbyStatusMessage(roomData);
   });
 
@@ -1269,15 +1264,13 @@ function renderBoard() {
 }
 
 function renderSidebar() {
-  const effectiveCurrentPlayerIndex = getEffectiveCurrentPlayerIndex();
-  const p = state.players[effectiveCurrentPlayerIndex] || currentPlayer();
+  const p = currentPlayer();
 
   els.phaseLabel.textContent =
     state.phase === "setup" ? `Setup Round ${state.setupRound}` : capitalize(state.phase);
 
   if (!p) {
-    const fallbackTurnName = currentRoomCode ? getOnlineCurrentTurnName() : "";
-    els.turnLabel.textContent = state.gameStarted && fallbackTurnName ? `• ${fallbackTurnName}` : "";
+    els.turnLabel.textContent = "";
     els.diceResult.textContent = state.dice
       ? `${state.dice[0]} + ${state.dice[1]} = ${state.dice[0] + state.dice[1]}`
       : "-";
@@ -1287,24 +1280,42 @@ function renderSidebar() {
     return;
   }
 
-  els.turnLabel.textContent = state.gameStarted ? `• ${p.name}` : "";
+  const sidebarTurnName = currentRoomCode ? getOnlineCurrentTurnName(currentRoomData) : p.name;
+  els.turnLabel.textContent = state.gameStarted ? `• ${sidebarTurnName}` : "";
   els.diceResult.textContent = state.dice
     ? `${state.dice[0]} + ${state.dice[1]} = ${state.dice[0] + state.dice[1]}`
     : "-";
 
-  els.currentPlayerCard.innerHTML = `
-    <div class="player-card">
-      <div class="player-dot" style="background:${p.color}"></div>
-      <div>
-        <div><strong>${escapeHtml(p.name)}</strong></div>
-        ${currentRoomCode ? "" : `<div class="resource-row">${RESOURCES.map(r => `<span class="badge">${capitalize(r)}: ${p.resources[r]}</span>`).join("")}</div>`}
-        <div class="cost-row">
-          <span class="badge">Roads left: ${p.roadsLeft}</span>
-          <span class="badge">Settlements left: ${p.settlementsLeft}</span>
-          <span class="badge">Cities left: ${p.citiesLeft}</span>
+  if (currentRoomCode) {
+    els.currentPlayerCard.innerHTML = `
+      <div class="player-card">
+        <div class="player-dot" style="background:${p.color}"></div>
+        <div>
+          <div><strong>${escapeHtml(sidebarTurnName)}</strong></div>
+          <div class="cost-row">
+            <span class="badge">Roads left: ${p.roadsLeft}</span>
+            <span class="badge">Settlements left: ${p.settlementsLeft}</span>
+            <span class="badge">Cities left: ${p.citiesLeft}</span>
+          </div>
         </div>
-      </div>
-    </div>`;
+      </div>`;
+  } else {
+    els.currentPlayerCard.innerHTML = `
+      <div class="player-card">
+        <div class="player-dot" style="background:${p.color}"></div>
+        <div>
+          <div><strong>${escapeHtml(p.name)}</strong></div>
+          <div class="resource-row">
+            ${RESOURCES.map(r => `<span class="badge">${capitalize(r)}: ${p.resources[r]}</span>`).join("")}
+          </div>
+          <div class="cost-row">
+            <span class="badge">Roads left: ${p.roadsLeft}</span>
+            <span class="badge">Settlements left: ${p.settlementsLeft}</span>
+            <span class="badge">Cities left: ${p.citiesLeft}</span>
+          </div>
+        </div>
+      </div>`;
+  }
 
   const stats = state.players.map((pl, idx) => {
     const vps = computeVictoryPoints(idx);
