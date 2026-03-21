@@ -138,6 +138,7 @@ const els = {
   joinRoomBtn: document.getElementById("joinRoomBtn"),
   roomCodeDisplay: document.getElementById("roomCodeDisplay"),
   roomStatusDisplay: document.getElementById("roomStatusDisplay"),
+  onlineCurrentTurnDisplay: document.getElementById("onlineCurrentTurnDisplay"),
   startOnlineMatchBtn: document.getElementById("startOnlineMatchBtn"),
   onlinePlayersList: document.getElementById("onlinePlayersList")
 };
@@ -273,8 +274,6 @@ function applySerializedStateFromRoom(remoteState) {
   state.winner = remoteState.winner ?? null;
   state.tradeLock = !!remoteState.tradeLock;
 
-  normalizeOnlineTurnState();
-
   if (state.phase === "setup" && !state.pendingAction) {
     state.pendingAction = { type: "buildSettlement", free: true, source: "setup" };
   }
@@ -284,59 +283,29 @@ function getOrderedRoomPlayers(roomData) {
   return Object.values(roomData?.players || {}).sort((a, b) => (a.seat ?? 99) - (b.seat ?? 99));
 }
 
-function getMySeatIndex() {
-  if (!firebaseUser || !currentRoomData?.players) return -1;
-  const seat = currentRoomData.players[firebaseUser.uid]?.seat;
-  return Number.isInteger(seat) ? seat : -1;
-}
-
-function getOnlineCurrentPlayerIndex() {
-  const playerCount = Array.isArray(state.players) ? state.players.length : 0;
-  if (playerCount <= 0) return 0;
-
-  const direct = Number(state.currentPlayer);
-  if (Number.isInteger(direct) && direct >= 0 && direct < playerCount) return direct;
-
-  const metaIndex = Number(currentRoomData?.meta?.currentPlayerIndex);
-  if (Number.isInteger(metaIndex) && metaIndex >= 0 && metaIndex < playerCount) return metaIndex;
-
-  return 0;
-}
-
-function normalizeOnlineTurnState() {
-  if (!currentRoomCode) return;
-
-  if ((!Array.isArray(state.players) || !state.players.length) && currentRoomData?.players) {
-    const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
-    if (orderedPlayers.length) {
-      state.players = setupPlayers(orderedPlayers.map(player => ({ name: player.name })));
-    }
-  }
-
-  if (Array.isArray(state.players) && state.players.length) {
-    state.currentPlayer = getOnlineCurrentPlayerIndex();
-  }
-}
-
 function getCurrentTurnUid() {
-  const normalizedIndex = getOnlineCurrentPlayerIndex();
-  const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
-  const bySeat = orderedPlayers[normalizedIndex]?.uid;
-  if (bySeat) return bySeat;
-
-  const directUid = currentRoomData?.meta?.seatUidOrder?.[normalizedIndex];
+  const directUid = currentRoomData?.meta?.seatUidOrder?.[state.currentPlayer];
   if (directUid) return directUid;
 
-  return null;
+  const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
+  return orderedPlayers[state.currentPlayer]?.uid || null;
+}
+
+function getOnlineCurrentTurnName() {
+  if (!currentRoomData) return "-";
+
+  const uid = currentRoomData?.meta?.seatUidOrder?.[state.currentPlayer];
+  if (uid && currentRoomData.players?.[uid]?.name) {
+    return currentRoomData.players[uid].name;
+  }
+
+  const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
+  return orderedPlayers[state.currentPlayer]?.name || "-";
 }
 
 function isMyTurnOnline() {
   if (!currentRoomCode) return true;
   if (!firebaseUser) return false;
-
-  const mySeatIndex = getMySeatIndex();
-  if (mySeatIndex >= 0 && mySeatIndex === getOnlineCurrentPlayerIndex()) return true;
-
   return getCurrentTurnUid() === firebaseUser.uid;
 }
 
@@ -348,6 +317,14 @@ function updateRoomPanel() {
   els.roomCodeDisplay.textContent = currentRoomCode || "-";
   els.roomStatusDisplay.textContent = currentRoomData?.meta?.status || "Offline";
   els.leaveRoomBtn.disabled = !currentRoomCode;
+
+  if (els.onlineCurrentTurnDisplay) {
+    if (currentRoomData?.meta?.status === "playing" && state.gameStarted) {
+      els.onlineCurrentTurnDisplay.textContent = getOnlineCurrentTurnName();
+    } else {
+      els.onlineCurrentTurnDisplay.textContent = "-";
+    }
+  }
 
   const inOnlineRoom = !!currentRoomCode;
   const roomStatus = currentRoomData?.meta?.status || "Offline";
@@ -364,7 +341,6 @@ function updateRoomPanel() {
     getOrderedRoomPlayers(currentRoomData).length >= 2;
 
   els.startOnlineMatchBtn.disabled = !canStart;
-
 
   if (inOnlineRoom) {
     if (isRoomHost() && roomStatus === "lobby") {
@@ -389,16 +365,24 @@ function updateRoomPanel() {
     return;
   }
 
-  els.onlinePlayersList.innerHTML = players.map(player => {
+  els.onlinePlayersList.innerHTML = players.map((player, index) => {
     const isYou = firebaseUser && player.uid === firebaseUser.uid;
     const connectionClass = player.connected ? "connected" : "disconnected";
     const connectionText = player.connected ? "Connected" : "Offline";
+    const isCurrentTurn =
+      currentRoomData?.meta?.status === "playing" &&
+      state.gameStarted &&
+      index === state.currentPlayer;
 
     return `
       <div class="online-player-row">
         <div class="online-player-dot" style="background:${player.color}"></div>
         <div>
-          <div><strong>${escapeHtml(player.name)}</strong> ${isYou ? `<span class="online-player-you">(You)</span>` : ""}</div>
+          <div>
+            <strong>${escapeHtml(player.name)}</strong>
+            ${isYou ? `<span class="online-player-you">(You)</span>` : ""}
+            ${isCurrentTurn ? `<span class="online-player-you">• TURN</span>` : ""}
+          </div>
           <div class="online-player-tag">Seat ${player.seat + 1}</div>
         </div>
         <div class="room-pill ${connectionClass}">${connectionText}</div>
@@ -650,35 +634,51 @@ async function startOnlineMatch() {
     return;
   }
 
-  const orderedPlayers = getOrderedRoomPlayers(currentRoomData).filter(player => player.connected);
+  const orderedPlayers = getOrderedRoomPlayers(currentRoomData)
+    .filter(player => player.connected)
+    .sort((a, b) => (a.seat ?? 99) - (b.seat ?? 99));
 
   if (orderedPlayers.length < 2) {
     alertMsg("You need at least 2 connected players to start.");
     return;
   }
 
+  const seatUidOrder = orderedPlayers.map(player => player.uid);
+
   startNewGame({
     players: orderedPlayers.map(player => ({ name: player.name }))
   });
 
-  // For online play, always let seat 0 / host start setup first.
   state.startPlayer = 0;
   state.currentPlayer = 0;
   state.setupRound = 1;
   state.setupDirection = 1;
   state.setupOrderIndex = 0;
   state.pendingAction = { type: "buildSettlement", free: true, source: "setup" };
+  state.phase = "setup";
   setStatus(`${playerName(state.currentPlayer)}: place your first settlement.`);
 
-  const seatUidOrder = orderedPlayers.map(player => player.uid);
+  currentRoomData = {
+    ...(currentRoomData || {}),
+    meta: {
+      ...(currentRoomData?.meta || {}),
+      status: "playing",
+      updatedAt: Date.now(),
+      seatUidOrder
+    }
+  };
+
+  render();
 
   await update(getRoomRef(currentRoomCode), {
     "meta/status": "playing",
     "meta/updatedAt": Date.now(),
     "meta/seatUidOrder": seatUidOrder,
-    "meta/currentPlayerIndex": state.currentPlayer,
     gameState: serializeStateForRoom()
   });
+
+  await syncRoomStateNow(true);
+  render();
 }
 
 async function syncRoomStateNow(force = false) {
@@ -692,7 +692,6 @@ async function syncRoomStateNow(force = false) {
 
   await update(getRoomRef(currentRoomCode), {
     "meta/updatedAt": Date.now(),
-    "meta/currentPlayerIndex": state.currentPlayer,
     gameState: serializeStateForRoom()
   });
 }
@@ -1290,21 +1289,36 @@ function renderSidebar() {
     ? `${state.dice[0]} + ${state.dice[1]} = ${state.dice[0] + state.dice[1]}`
     : "-";
 
-  els.currentPlayerCard.innerHTML = `
-    <div class="player-card">
-      <div class="player-dot" style="background:${p.color}"></div>
-      <div>
-        <div><strong>${escapeHtml(p.name)}</strong></div>
-        <div class="resource-row">
-          ${RESOURCES.map(r => `<span class="badge">${capitalize(r)}: ${p.resources[r]}</span>`).join("")}
+  if (currentRoomCode) {
+    els.currentPlayerCard.innerHTML = `
+      <div class="player-card">
+        <div class="player-dot" style="background:${p.color}"></div>
+        <div>
+          <div><strong>${escapeHtml(p.name)}</strong></div>
+          <div class="cost-row">
+            <span class="badge">Roads left: ${p.roadsLeft}</span>
+            <span class="badge">Settlements left: ${p.settlementsLeft}</span>
+            <span class="badge">Cities left: ${p.citiesLeft}</span>
+          </div>
         </div>
-        <div class="cost-row">
-          <span class="badge">Roads left: ${p.roadsLeft}</span>
-          <span class="badge">Settlements left: ${p.settlementsLeft}</span>
-          <span class="badge">Cities left: ${p.citiesLeft}</span>
+      </div>`;
+  } else {
+    els.currentPlayerCard.innerHTML = `
+      <div class="player-card">
+        <div class="player-dot" style="background:${p.color}"></div>
+        <div>
+          <div><strong>${escapeHtml(p.name)}</strong></div>
+          <div class="resource-row">
+            ${RESOURCES.map(r => `<span class="badge">${capitalize(r)}: ${p.resources[r]}</span>`).join("")}
+          </div>
+          <div class="cost-row">
+            <span class="badge">Roads left: ${p.roadsLeft}</span>
+            <span class="badge">Settlements left: ${p.settlementsLeft}</span>
+            <span class="badge">Cities left: ${p.citiesLeft}</span>
+          </div>
         </div>
-      </div>
-    </div>`;
+      </div>`;
+  }
 
   const stats = state.players.map((pl, idx) => {
     const vps = computeVictoryPoints(idx);
