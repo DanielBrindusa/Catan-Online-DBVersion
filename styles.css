@@ -462,7 +462,7 @@ input, select {
   position: absolute;
   bottom: 2px;
   left: 2px;
-  width: 400px;
+  width: 24%;
   border-radius: 10px;
   opacity: 0.92;
   filter: drop-shadow(0 4px 12px rgba(0,0,0,0.7));
@@ -472,7 +472,7 @@ input, select {
 
 #buildingCostsOverlay:hover {
   opacity: 1;
-  width: 600px;
+  width: 50%;
   background: rgba(11, 18, 32, 0.88);
   border-radius: 10px;
 }
@@ -489,7 +489,14 @@ input, select {
   padding: 10px 12px;
   backdrop-filter: blur(6px);
   box-shadow: 0 6px 24px rgba(0,0,0,0.55);
-  min-width: 168px;
+  min-width: 29%;
+}
+
+#resourcesOverlay:hover {
+  opacity: 1;
+  width: 50%;
+  background: rgba(11, 18, 32, 0.88);
+  border-radius: 10px;
 }
 
 .res-overlay-name {
