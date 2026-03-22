@@ -53,6 +53,7 @@ async function bootstrapFirebase() {
         const roomData = roomSnapshot.val();
         const myUid = auth.currentUser.uid;
         const myEntry = roomData?.players?.[myUid];
+        const seatUidArray = toArray(roomData?.meta?.seatUidOrder);
 
         if (myEntry) {
           // Player entry still present — just re-subscribe and mark connected.
@@ -60,15 +61,15 @@ async function bootstrapFirebase() {
           await markPresenceConnected(savedRoomCode);
         } else if (
           roomData?.meta?.status === "playing" &&
-          Array.isArray(roomData?.meta?.seatUidOrder) &&
-          roomData.meta.seatUidOrder.includes(myUid)
+          seatUidArray.includes(myUid)
         ) {
           // The player entry was cleaned up by onDisconnect (lobby guest path)
           // but the game is still running and this UID is a valid seat.
           // Re-create the entry from the serialized game state so they can
           // rejoin mid-game without losing their progress.
-          const seatIndex = roomData.meta.seatUidOrder.indexOf(myUid);
-          const p = roomData.gameState?.players?.[seatIndex];
+          const seatIndex = seatUidArray.indexOf(myUid);
+          const playersArr = toArray(roomData.gameState?.players);
+          const p = playersArr[seatIndex];
           if (p) {
             await set(ref(db, `rooms/${savedRoomCode}/players/${myUid}`), {
               uid: myUid,
@@ -225,11 +226,37 @@ function getSystemCountRef() {
   return ref(db, "system/activeRoomCount");
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Firebase Array normaliser
+//
+// Firebase Realtime Database does NOT store JavaScript Arrays as arrays.
+// It converts them to plain objects with numeric string keys:
+//   ["a","b","c"]  →  {"0":"a","1":"b","2":"c"}
+//
+// When the data comes back from Firebase, every field that was originally an
+// array is now an object.  Calling .map(), .forEach(), .includes(), new Set(),
+// Array.isArray(), etc. on those objects throws TypeErrors or silently returns
+// wrong results, breaking the entire deserialization pipeline.
+//
+// toArray() normalises both representations back to a proper JS Array so the
+// rest of the codebase can work without changes.
+// ─────────────────────────────────────────────────────────────────────────────
+function toArray(val) {
+  if (!val) return [];
+  if (Array.isArray(val)) return val;
+  // Firebase object with numeric string keys → sorted array
+  return Object.keys(val)
+    .sort((a, b) => Number(a) - Number(b))
+    .map(k => val[k]);
+}
+
 function serializeBoard(board) {
   if (!board) return null;
 
   return {
     ...board,
+    // Serialise neighborsByVertex Map → plain object so Firebase can store it.
+    // Keys become strings; Set values become plain arrays.
     neighborsByVertex: Object.fromEntries(
       [...board.neighborsByVertex.entries()].map(([key, value]) => [String(key), [...value]])
     )
@@ -240,9 +267,42 @@ function deserializeBoard(board) {
   if (!board) return null;
 
   return {
+    // Spread first so all primitive fields (terrain, numbers, robber flags …)
+    // are copied.  Then override the fields that need special handling.
     ...board,
+
+    // hexes / vertices / edges come back from Firebase as objects, not arrays.
+    hexes:    toArray(board.hexes).map(h => ({
+      ...h,
+      corners:       toArray(h.corners),
+      adjacentHexes: toArray(h.adjacentHexes)
+    })),
+    vertices: toArray(board.vertices).map(v => ({
+      ...v,
+      adjacentHexes: toArray(v.adjacentHexes)
+    })),
+    edges: toArray(board.edges).map(e => ({
+      ...e,
+      // Firebase strips null values; edge.owner must be null (not undefined)
+      // because the codebase uses strict !== null checks throughout.
+      // undefined !== null is TRUE, which crashes renderBoard and breaks validRoadSpot.
+      owner: e.owner ?? null
+    })),
+
+    // bank is a plain object with string keys – Firebase preserves it fine.
+    bank: board.bank || { wood:19, brick:19, sheep:19, wheat:19, ore:19 },
+
+    // These two are also arrays.
+    discardQueue:        toArray(board.discardQueue),
+    pendingStealVictims: toArray(board.pendingStealVictims),
+
+    // Rebuild the Map.  Each value was stored as an array; Firebase may have
+    // returned it as a numeric-keyed object, so we normalise it with toArray.
     neighborsByVertex: new Map(
-      Object.entries(board.neighborsByVertex || {}).map(([key, value]) => [Number(key), new Set(value)])
+      Object.entries(board.neighborsByVertex || {}).map(([key, value]) => [
+        Number(key),
+        new Set(toArray(value))   // ← toArray() fixes the Firebase object issue
+      ])
     )
   };
 }
@@ -255,9 +315,17 @@ function serializePlayers(players) {
 }
 
 function deserializePlayers(players) {
-  return (players || []).map(player => ({
+  // toArray() handles the case where Firebase returned an object instead of array.
+  return toArray(players).map(player => ({
     ...player,
-    ports: new Set(player.ports || [])
+    // Sub-arrays inside each player object
+    roads:       toArray(player.roads),
+    settlements: toArray(player.settlements),
+    cities:      toArray(player.cities),
+    devCards:    toArray(player.devCards),
+    newDevCards: toArray(player.newDevCards),
+    // ports was serialised as an array; convert back to Set
+    ports: new Set(toArray(player.ports))
   }));
 }
 
@@ -291,23 +359,28 @@ function applySerializedStateFromRoom(remoteState) {
 
   state.gameStarted = !!remoteState.gameStarted;
   state.phase = remoteState.phase || "idle";
-  state.board = deserializeBoard(remoteState.board);
+  state.board   = deserializeBoard(remoteState.board);
   state.players = deserializePlayers(remoteState.players);
-  state.currentPlayer = remoteState.currentPlayer ?? 0;
-  state.startPlayer = remoteState.startPlayer ?? 0;
-  state.setupRound = remoteState.setupRound ?? 1;
-  state.setupDirection = remoteState.setupDirection ?? 1;
+  state.currentPlayer   = remoteState.currentPlayer ?? 0;
+  state.startPlayer     = remoteState.startPlayer ?? 0;
+  state.setupRound      = remoteState.setupRound ?? 1;
+  state.setupDirection  = remoteState.setupDirection ?? 1;
   state.setupOrderIndex = remoteState.setupOrderIndex ?? 0;
   state.diceRolled = !!remoteState.diceRolled;
-  state.dice = remoteState.dice ?? null;
-  state.log = Array.isArray(remoteState.log) ? [...remoteState.log] : [];
-  state.pendingAction = remoteState.pendingAction ? deepClone(remoteState.pendingAction) : null;
-  state.robberNeedsDiscard = remoteState.robberNeedsDiscard ? deepClone(remoteState.robberNeedsDiscard) : null;
+  // dice is [d1, d2] – Firebase may return it as {"0":d1,"1":d2}
+  state.dice = remoteState.dice ? toArray(remoteState.dice) : null;
+  // log / devDeck are arrays; normalise regardless of Firebase's representation
+  state.log     = toArray(remoteState.log);
+  state.devDeck = toArray(remoteState.devDeck);
+  state.pendingAction       = remoteState.pendingAction ? deepClone(remoteState.pendingAction) : null;
+  // robberNeedsDiscard is an array of {playerId, amount} objects
+  state.robberNeedsDiscard  = remoteState.robberNeedsDiscard
+    ? toArray(deepClone(remoteState.robberNeedsDiscard))
+    : null;
   state.robberMoveReason = remoteState.robberMoveReason ?? null;
-  state.devDeck = Array.isArray(remoteState.devDeck) ? [...remoteState.devDeck] : [];
   state.longestRoadOwner = remoteState.longestRoadOwner ?? null;
   state.largestArmyOwner = remoteState.largestArmyOwner ?? null;
-  state.winner = remoteState.winner ?? null;
+  state.winner    = remoteState.winner ?? null;
   state.tradeLock = !!remoteState.tradeLock;
 }
 
@@ -316,7 +389,10 @@ function getOrderedRoomPlayers(roomData) {
 }
 
 function getCurrentTurnUid() {
-  return currentRoomData?.meta?.seatUidOrder?.[state.currentPlayer] || null;
+  // seatUidOrder may come back from Firebase as a numeric-keyed object, not an
+  // array.  toArray() normalises both forms so index access is always correct.
+  const order = toArray(currentRoomData?.meta?.seatUidOrder);
+  return order[state.currentPlayer] || null;
 }
 
 function isMyTurnOnline() {
@@ -462,9 +538,17 @@ async function subscribeToRoom(roomCode) {
 
     if (roomData.gameState) {
       suppressRoomSync = true;
-      applySerializedStateFromRoom(roomData.gameState);
-      render();
-      suppressRoomSync = false;
+      try {
+        applySerializedStateFromRoom(roomData.gameState);
+        render();
+      } catch (err) {
+        console.error("Error applying remote game state:", err);
+      } finally {
+        // Always reset the flag – if we didn't do this after a thrown error,
+        // suppressRoomSync would remain true permanently and no future sync
+        // would ever be scheduled.
+        suppressRoomSync = false;
+      }
     }
 
     setLobbyStatusMessage(roomData);
@@ -708,15 +792,10 @@ async function syncRoomStateNow() {
   if (!currentRoomData) return;
   if (currentRoomData.meta?.status !== "playing") return;
   if (!firebaseUser) return;
-  // BUG FIX: We intentionally do NOT check isMyTurnOnline() here.
-  // After a turn advances (state.currentPlayer changes to the next player),
-  // isMyTurnOnline() would return false for the device that just acted, which
-  // caused the updated state to be silently dropped and never pushed to Firebase.
-  // All other players would then be stuck seeing a stale game state.
-  // Instead we verify only that this device belongs to the game at all.
-  // The suppressRoomSync flag (set to true inside the onValue listener) prevents
-  // re-entrant sync loops when remote state is applied.
-  if (!currentRoomData.meta?.seatUidOrder?.includes(firebaseUser.uid)) return;
+  // Use toArray() because Firebase may have returned seatUidOrder as a
+  // numeric-keyed object rather than a proper JS Array.  Calling .includes()
+  // directly on such an object throws TypeError and silently kills the sync.
+  if (!toArray(currentRoomData.meta?.seatUidOrder).includes(firebaseUser.uid)) return;
 
   await update(getRoomRef(currentRoomCode), {
     "meta/updatedAt": Date.now(),
@@ -730,11 +809,8 @@ function scheduleRoomStateSync() {
   if (!currentRoomData) return;
   if (currentRoomData.meta?.status !== "playing") return;
   if (!firebaseUser) return;
-  // Same rationale as syncRoomStateNow: dropping isMyTurnOnline() lets the
-  // acting device push state even after state.currentPlayer has already been
-  // advanced to the next player.  We still gate on seatUidOrder membership so
-  // that observers who somehow share the URL cannot clobber game state.
-  if (!currentRoomData.meta?.seatUidOrder?.includes(firebaseUser.uid)) return;
+  // Same toArray() normalisation as syncRoomStateNow.
+  if (!toArray(currentRoomData.meta?.seatUidOrder).includes(firebaseUser.uid)) return;
 
   clearTimeout(roomSyncTimer);
   roomSyncTimer = setTimeout(() => {
