@@ -462,7 +462,7 @@ input, select {
   position: absolute;
   bottom: 2px;
   left: 2px;
-  width: 215px;
+  width: 400px;
   border-radius: 10px;
   opacity: 0.92;
   filter: drop-shadow(0 4px 12px rgba(0,0,0,0.7));
@@ -471,7 +471,7 @@ input, select {
 }
 
 #buildingCostsOverlay:hover {
-  width: 260px;
+  width: 600px;
 }
 
 /* ── Resource overlay (bottom-right of board) ──────────────────────────────── */
