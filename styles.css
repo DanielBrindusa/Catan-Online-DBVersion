@@ -462,7 +462,7 @@ input, select {
   position: absolute;
   bottom: 12px;
   left: 12px;
-  width: 300px;
+  width: 400px;
   border-radius: 10px;
   opacity: 0.92;
   pointer-events: none;
