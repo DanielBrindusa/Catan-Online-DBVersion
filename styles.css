@@ -490,11 +490,13 @@ input, select {
   backdrop-filter: blur(6px);
   box-shadow: 0 6px 24px rgba(0,0,0,0.55);
   min-width: 29%;
+  min-height: 8%;
 }
 
 #resourcesOverlay:hover {
   opacity: 1;
-  width: 50%;
+  min-width: 50%;
+  min-height: 12%;
   background: rgba(11, 18, 32, 0.88);
   border-radius: 10px;
 }
@@ -553,4 +555,21 @@ input, select {
   font-weight: 800;
   color: #f1f5f9;
   line-height: 1;
+}
+
+.res-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #94a3b8;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: max-height 0.2s ease, opacity 0.2s ease;
+}
+
+#resourcesOverlay:hover .res-label {
+  max-height: 20px;
+  opacity: 1;
 }

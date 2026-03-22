@@ -1424,6 +1424,7 @@ function renderSidebar() {
           <div class="res-tile ${p.resources[r] === 0 ? "res-tile-zero" : ""}">
             <img src="assets/${RESOURCE_ICONS[r]}" alt="${r}" class="res-icon" />
             <span class="res-count">${p.resources[r]}</span>
+            <span class="res-label">${capitalize(r)}</span>
           </div>`).join("")}
       </div>`;
   } else {
