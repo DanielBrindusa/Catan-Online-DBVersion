@@ -1,6 +1,5 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-app.js";
-import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-auth.js";
-import { getDatabase, ref, set, get, update, remove, onValue, runTransaction, onDisconnect, push } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-database.js";
+let auth = null;
+let db = null;
 
 const firebaseConfig = {
   apiKey: "AIzaSyBkMVO3-dpYpjsl4h5pP7QvDQ5ZbKr_Qus",
@@ -13,9 +12,20 @@ const firebaseConfig = {
   measurementId: "G-BJZFKFGSR8"
 };
 
-const firebaseApp = initializeApp(firebaseConfig);
-const auth = getAuth(firebaseApp);
-const db = getDatabase(firebaseApp);
+let initializeAppFn = null;
+let getAuthFn = null;
+let signInAnonymouslyFn = null;
+let onAuthStateChangedFn = null;
+let getDatabaseFn = null;
+let ref = null;
+let set = null;
+let get = null;
+let update = null;
+let remove = null;
+let onValue = null;
+let runTransaction = null;
+let onDisconnect = null;
+let push = null;
 
 let firebaseUser = null;
 let currentRoomCode = null;
@@ -75,10 +85,14 @@ async function reclaimRoomSeatIfNeeded(roomCode, roomData) {
 }
 
 async function initFirebaseAuth() {
-  await signInAnonymously(auth);
+  if (!auth || !signInAnonymouslyFn || !onAuthStateChangedFn) {
+    throw new Error("Firebase Auth is not initialized.");
+  }
+
+  await signInAnonymouslyFn(auth);
 
   return new Promise((resolve) => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChangedFn(auth, (user) => {
       if (user) {
         firebaseUser = user;
         console.log("Firebase anonymous login successful:", user.uid);
@@ -91,6 +105,31 @@ async function initFirebaseAuth() {
 
 async function bootstrapFirebase() {
   try {
+    const firebaseAppModule = await import("https://www.gstatic.com/firebasejs/12.11.0/firebase-app.js");
+    const firebaseAuthModule = await import("https://www.gstatic.com/firebasejs/12.11.0/firebase-auth.js");
+    const firebaseDbModule = await import("https://www.gstatic.com/firebasejs/12.11.0/firebase-database.js");
+
+    initializeAppFn = firebaseAppModule.initializeApp;
+
+    getAuthFn = firebaseAuthModule.getAuth;
+    signInAnonymouslyFn = firebaseAuthModule.signInAnonymously;
+    onAuthStateChangedFn = firebaseAuthModule.onAuthStateChanged;
+
+    getDatabaseFn = firebaseDbModule.getDatabase;
+    ref = firebaseDbModule.ref;
+    set = firebaseDbModule.set;
+    get = firebaseDbModule.get;
+    update = firebaseDbModule.update;
+    remove = firebaseDbModule.remove;
+    onValue = firebaseDbModule.onValue;
+    runTransaction = firebaseDbModule.runTransaction;
+    onDisconnect = firebaseDbModule.onDisconnect;
+    push = firebaseDbModule.push;
+
+    const firebaseApp = initializeAppFn(firebaseConfig);
+    auth = getAuthFn(firebaseApp);
+    db = getDatabaseFn(firebaseApp);
+
     await initFirebaseAuth();
     loadNicknameFromStorage();
     updateRoomPanel();
@@ -124,7 +163,9 @@ async function bootstrapFirebase() {
     console.log("Firebase is ready");
   } catch (error) {
     console.error("Firebase initialization failed:", error);
-    alert("Firebase failed to initialize. Open the browser console with F12 and check the error.");
+    console.warn("Local game remains available, but online room features are disabled.");
+    loadNicknameFromStorage();
+    updateRoomPanel();
   }
 }
 
@@ -632,6 +673,12 @@ async function markPresenceConnected(roomCode) {
 }
 
 async function createRoom() {
+
+  if (!db || !auth) {
+    alertMsg("Online mode is currently unavailable. Local mode should still work.");
+    return;
+  }
+
   const nickname = getNickname();
   if (!nickname) return;
   if (!firebaseUser) {
@@ -712,6 +759,12 @@ async function createRoom() {
 }
 
 async function joinRoom() {
+
+  if (!db || !auth) {
+    alertMsg("Online mode is currently unavailable. Local mode should still work.");
+    return;
+  }
+
   const nickname = getNickname();
   if (!nickname) return;
   if (!firebaseUser) {
@@ -792,6 +845,12 @@ async function joinRoom() {
 }
 
 async function leaveRoom() {
+
+  if (!db || !auth) {
+    alertMsg("Online mode is currently unavailable. Local mode should still work.");
+    return;
+  }
+
   if (!currentRoomCode || !firebaseUser) return;
 
   const roomCode = currentRoomCode;
@@ -825,6 +884,12 @@ async function leaveRoom() {
 }
 
 async function startOnlineMatch() {
+
+  if (!db || !auth) {
+    alertMsg("Online mode is currently unavailable. Local mode should still work.");
+    return;
+  }
+
   if (!currentRoomCode || !currentRoomData) {
     alertMsg("Create or join a room first.");
     return;
