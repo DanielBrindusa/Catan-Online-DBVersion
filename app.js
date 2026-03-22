@@ -45,11 +45,48 @@ async function bootstrapFirebase() {
     const savedRoomCode = localStorage.getItem("catanCurrentRoomCode");
     if (savedRoomCode) {
       const roomSnapshot = await get(getRoomRef(savedRoomCode));
-      if (roomSnapshot.exists() && roomSnapshot.val()?.players?.[auth.currentUser.uid]) {
-        await subscribeToRoom(savedRoomCode);
-        await markPresenceConnected(savedRoomCode);
-      } else {
+
+      if (!roomSnapshot.exists()) {
+        // Room was deleted (e.g. host disconnected from lobby).
         localStorage.removeItem("catanCurrentRoomCode");
+      } else {
+        const roomData = roomSnapshot.val();
+        const myUid = auth.currentUser.uid;
+        const myEntry = roomData?.players?.[myUid];
+
+        if (myEntry) {
+          // Player entry still present — just re-subscribe and mark connected.
+          await subscribeToRoom(savedRoomCode);
+          await markPresenceConnected(savedRoomCode);
+        } else if (
+          roomData?.meta?.status === "playing" &&
+          Array.isArray(roomData?.meta?.seatUidOrder) &&
+          roomData.meta.seatUidOrder.includes(myUid)
+        ) {
+          // The player entry was cleaned up by onDisconnect (lobby guest path)
+          // but the game is still running and this UID is a valid seat.
+          // Re-create the entry from the serialized game state so they can
+          // rejoin mid-game without losing their progress.
+          const seatIndex = roomData.meta.seatUidOrder.indexOf(myUid);
+          const p = roomData.gameState?.players?.[seatIndex];
+          if (p) {
+            await set(ref(db, `rooms/${savedRoomCode}/players/${myUid}`), {
+              uid: myUid,
+              name: p.name,
+              seat: seatIndex,
+              color: p.color,
+              connected: true,
+              joinedAt: Date.now()
+            });
+            await subscribeToRoom(savedRoomCode);
+            await markPresenceConnected(savedRoomCode);
+          } else {
+            localStorage.removeItem("catanCurrentRoomCode");
+          }
+        } else {
+          // Room exists but this player has no seat in it — clear stale data.
+          localStorage.removeItem("catanCurrentRoomCode");
+        }
       }
     }
 
@@ -368,10 +405,32 @@ function setLobbyStatusMessage(roomData) {
   }
 
   if (roomData.meta?.status === "playing" && state.gameStarted) {
+    const name = playerName(state.currentPlayer);
     if (isMyTurnOnline()) {
-      setStatus(`${playerName(state.currentPlayer)}: it is your turn.`);
+      // Give the active player a contextual prompt so they know exactly what to do.
+      if (state.phase === "setup") {
+        if (state.pendingAction?.type === "buildSettlement") {
+          setStatus(`${name}: click a valid vertex on the board to place your settlement.`);
+        } else if (state.pendingAction?.type === "buildRoad") {
+          setStatus(`${name}: click an edge adjacent to your new settlement to place a road.`);
+        } else {
+          setStatus(`${name}: it is your turn.`);
+        }
+      } else if (!state.diceRolled) {
+        setStatus(`${name}: roll the dice to start your turn.`);
+      } else if (state.pendingAction?.type === "moveRobber") {
+        setStatus(`${name}: click a hex to move the robber.`);
+      } else if (state.pendingAction?.type === "buildRoad") {
+        setStatus(`${name}: click an edge to place a road.`);
+      } else if (state.pendingAction?.type === "buildSettlement") {
+        setStatus(`${name}: click a valid vertex to build a settlement.`);
+      } else if (state.pendingAction?.type === "buildCity") {
+        setStatus(`${name}: click one of your settlements to upgrade it to a city.`);
+      } else {
+        setStatus(`${name}: trade, build, play a dev card, or end your turn.`);
+      }
     } else {
-      setStatus(`${playerName(state.currentPlayer)}: waiting for that player to act.`);
+      setStatus(`Waiting for ${name} to play…`);
     }
   }
 }
@@ -417,9 +476,33 @@ async function subscribeToRoom(roomCode) {
 async function markPresenceConnected(roomCode) {
   if (!firebaseUser) return;
 
+  // Re-fetch the room to determine its current status.  We need this to decide
+  // what Firebase should do when the client disconnects unexpectedly.
+  const snap = await get(getRoomRef(roomCode));
+  const roomData = snap.val();
+  if (!roomData) return;
+
   const connectedRef = ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}/connected`);
   await set(connectedRef, true);
-  onDisconnect(connectedRef).set(false);
+
+  const isGameInProgress = roomData.meta?.status === "playing";
+  const isHost = roomData.meta?.hostUid === firebaseUser.uid;
+
+  if (isGameInProgress) {
+    // Game is running: keep the player entry intact but flag them as offline.
+    // bootstrapFirebase will restore connected:true if they reopen the tab.
+    onDisconnect(connectedRef).set(false);
+  } else if (isHost) {
+    // Host disconnects from the lobby → remove the whole room node so it does
+    // not linger as a "zombie" session.  (The system count may drift by 1 since
+    // we cannot run a transaction inside onDisconnect; it self-corrects on the
+    // next createRoom transaction.)
+    onDisconnect(getRoomRef(roomCode)).remove();
+  } else {
+    // Non-host guest disconnects from the lobby → remove only their player
+    // entry so the slot is freed for someone else.
+    onDisconnect(ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}`)).remove();
+  }
 }
 
 async function createRoom() {
@@ -625,7 +708,15 @@ async function syncRoomStateNow() {
   if (!currentRoomData) return;
   if (currentRoomData.meta?.status !== "playing") return;
   if (!firebaseUser) return;
-  if (!isMyTurnOnline()) return;
+  // BUG FIX: We intentionally do NOT check isMyTurnOnline() here.
+  // After a turn advances (state.currentPlayer changes to the next player),
+  // isMyTurnOnline() would return false for the device that just acted, which
+  // caused the updated state to be silently dropped and never pushed to Firebase.
+  // All other players would then be stuck seeing a stale game state.
+  // Instead we verify only that this device belongs to the game at all.
+  // The suppressRoomSync flag (set to true inside the onValue listener) prevents
+  // re-entrant sync loops when remote state is applied.
+  if (!currentRoomData.meta?.seatUidOrder?.includes(firebaseUser.uid)) return;
 
   await update(getRoomRef(currentRoomCode), {
     "meta/updatedAt": Date.now(),
@@ -639,7 +730,11 @@ function scheduleRoomStateSync() {
   if (!currentRoomData) return;
   if (currentRoomData.meta?.status !== "playing") return;
   if (!firebaseUser) return;
-  if (!isMyTurnOnline()) return;
+  // Same rationale as syncRoomStateNow: dropping isMyTurnOnline() lets the
+  // acting device push state even after state.currentPlayer has already been
+  // advanced to the next player.  We still gate on seatUidOrder membership so
+  // that observers who somehow share the URL cannot clobber game state.
+  if (!currentRoomData.meta?.seatUidOrder?.includes(firebaseUser.uid)) return;
 
   clearTimeout(roomSyncTimer);
   roomSyncTimer = setTimeout(() => {
