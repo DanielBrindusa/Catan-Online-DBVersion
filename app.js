@@ -1,5 +1,6 @@
-let auth = null;
-let db = null;
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-app.js";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-auth.js";
+import { getDatabase, ref, set, get, update, remove, onValue, runTransaction, onDisconnect } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBkMVO3-dpYpjsl4h5pP7QvDQ5ZbKr_Qus",
@@ -12,87 +13,19 @@ const firebaseConfig = {
   measurementId: "G-BJZFKFGSR8"
 };
 
-let initializeAppFn = null;
-let getAuthFn = null;
-let signInAnonymouslyFn = null;
-let onAuthStateChangedFn = null;
-let getDatabaseFn = null;
-let ref = null;
-let set = null;
-let get = null;
-let update = null;
-let remove = null;
-let onValue = null;
-let runTransaction = null;
-let onDisconnect = null;
-let push = null;
+const firebaseApp = initializeApp(firebaseConfig);
+const auth = getAuth(firebaseApp);
+const db = getDatabase(firebaseApp);
 
 let firebaseUser = null;
 let currentRoomCode = null;
 let currentRoomUnsubscribe = null;
 
-function getClientId() {
-  let clientId = localStorage.getItem("catanClientId");
-  if (!clientId) {
-    clientId = (globalThis.crypto?.randomUUID?.() || `client-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
-    localStorage.setItem("catanClientId", clientId);
-  }
-  return clientId;
-}
-
-function findRoomPlayerByClientId(roomData, clientId) {
-  return Object.entries(roomData?.players || {}).find(([, player]) => player?.clientId === clientId) || null;
-}
-
-async function reclaimRoomSeatIfNeeded(roomCode, roomData) {
-  if (!firebaseUser || !roomData) return false;
-
-  const currentEntry = roomData.players?.[firebaseUser.uid];
-  if (currentEntry) return true;
-
-  const clientId = getClientId();
-  const match = findRoomPlayerByClientId(roomData, clientId);
-  if (!match) return false;
-
-  const [oldUid, oldPlayer] = match;
-  if (!oldPlayer) return false;
-
-  const updates = {};
-  updates[`players/${firebaseUser.uid}`] = {
-    ...oldPlayer,
-    uid: firebaseUser.uid,
-    clientId,
-    connected: true
-  };
-  updates[`players/${oldUid}`] = null;
-
-  if (roomData.meta?.hostUid === oldUid) {
-    updates['meta/hostUid'] = firebaseUser.uid;
-  }
-
-  const seatUidOrder = Array.isArray(roomData.meta?.seatUidOrder)
-    ? roomData.meta.seatUidOrder.map(uid => uid === oldUid ? firebaseUser.uid : uid)
-    : [];
-
-  if (seatUidOrder.length) {
-    updates['meta/seatUidOrder'] = seatUidOrder;
-  }
-
-  updates['meta/updatedAt'] = Date.now();
-
-  await update(getRoomRef(roomCode), updates);
-  return true;
-}
-
 async function initFirebaseAuth() {
-  if (!auth || !signInAnonymouslyFn || !onAuthStateChangedFn) {
-    throw new Error("Firebase Auth is not initialized.");
-  }
-
-  await signInAnonymouslyFn(auth);
+  await signInAnonymously(auth);
 
   return new Promise((resolve) => {
-    const unsubscribe = onAuthStateChangedFn(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
         firebaseUser = user;
         console.log("Firebase anonymous login successful:", user.uid);
@@ -105,67 +38,25 @@ async function initFirebaseAuth() {
 
 async function bootstrapFirebase() {
   try {
-    const firebaseAppModule = await import("https://www.gstatic.com/firebasejs/12.11.0/firebase-app.js");
-    const firebaseAuthModule = await import("https://www.gstatic.com/firebasejs/12.11.0/firebase-auth.js");
-    const firebaseDbModule = await import("https://www.gstatic.com/firebasejs/12.11.0/firebase-database.js");
-
-    initializeAppFn = firebaseAppModule.initializeApp;
-
-    getAuthFn = firebaseAuthModule.getAuth;
-    signInAnonymouslyFn = firebaseAuthModule.signInAnonymously;
-    onAuthStateChangedFn = firebaseAuthModule.onAuthStateChanged;
-
-    getDatabaseFn = firebaseDbModule.getDatabase;
-    ref = firebaseDbModule.ref;
-    set = firebaseDbModule.set;
-    get = firebaseDbModule.get;
-    update = firebaseDbModule.update;
-    remove = firebaseDbModule.remove;
-    onValue = firebaseDbModule.onValue;
-    runTransaction = firebaseDbModule.runTransaction;
-    onDisconnect = firebaseDbModule.onDisconnect;
-    push = firebaseDbModule.push;
-
-    const firebaseApp = initializeAppFn(firebaseConfig);
-    auth = getAuthFn(firebaseApp);
-    db = getDatabaseFn(firebaseApp);
-
     await initFirebaseAuth();
     loadNicknameFromStorage();
     updateRoomPanel();
 
     const savedRoomCode = localStorage.getItem("catanCurrentRoomCode");
-    const savedSessionToken = loadCurrentRoomSession();
-
-    if (savedRoomCode && savedSessionToken) {
+    if (savedRoomCode) {
       const roomSnapshot = await get(getRoomRef(savedRoomCode));
-
-      if (roomSnapshot.exists()) {
-        const roomData = roomSnapshot.val();
-        const currentPlayer = roomData?.players?.[auth.currentUser.uid];
-
-        if (currentPlayer && currentPlayer.sessionToken === savedSessionToken) {
-          await subscribeToRoom(savedRoomCode);
-          await markPresenceConnected(savedRoomCode);
-        } else {
-          localStorage.removeItem("catanCurrentRoomCode");
-          clearCurrentRoomSession();
-        }
+      if (roomSnapshot.exists() && roomSnapshot.val()?.players?.[auth.currentUser.uid]) {
+        await subscribeToRoom(savedRoomCode);
+        await markPresenceConnected(savedRoomCode);
       } else {
         localStorage.removeItem("catanCurrentRoomCode");
-        clearCurrentRoomSession();
       }
-    } else {
-      localStorage.removeItem("catanCurrentRoomCode");
-      clearCurrentRoomSession();
     }
 
     console.log("Firebase is ready");
   } catch (error) {
     console.error("Firebase initialization failed:", error);
-    console.warn("Local game remains available, but online room features are disabled.");
-    loadNicknameFromStorage();
-    updateRoomPanel();
+    alert("Firebase failed to initialize. Open the browser console with F12 and check the error.");
   }
 }
 
@@ -247,7 +138,6 @@ const els = {
   joinRoomBtn: document.getElementById("joinRoomBtn"),
   roomCodeDisplay: document.getElementById("roomCodeDisplay"),
   roomStatusDisplay: document.getElementById("roomStatusDisplay"),
-  onlineCurrentTurnDisplay: document.getElementById("onlineCurrentTurnDisplay"),
   startOnlineMatchBtn: document.getElementById("startOnlineMatchBtn"),
   onlinePlayersList: document.getElementById("onlinePlayersList")
 };
@@ -259,31 +149,6 @@ const MAX_ACTIVE_ROOMS = 10;
 let currentRoomData = null;
 let suppressRoomSync = false;
 let roomSyncTimer = null;
-let currentRoomSessionToken = null;
-
-function generateSessionToken() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function clearCurrentRoomSession() {
-  currentRoomSessionToken = null;
-  localStorage.removeItem("catanCurrentRoomSessionToken");
-}
-
-function setCurrentRoomSession(token) {
-  currentRoomSessionToken = token;
-  localStorage.setItem("catanCurrentRoomSessionToken", token);
-}
-
-function loadCurrentRoomSession() {
-  const token = localStorage.getItem("catanCurrentRoomSessionToken");
-  currentRoomSessionToken = token || null;
-  return currentRoomSessionToken;
-}
-
-if (!localStorage.getItem("catanClientId")) {
-  localStorage.setItem("catanClientId", crypto.randomUUID());
-}
 
 function generateRoomCode(length = 5) {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -319,31 +184,8 @@ function getRoomRef(roomCode) {
   return ref(db, `rooms/${roomCode}`);
 }
 
-function getPlayerRef(roomCode, uid) {
-  return ref(db, `rooms/${roomCode}/players/${uid}`);
-}
-
-function getPlayerRef(roomCode, uid) {
-  return ref(db, `rooms/${roomCode}/players/${uid}`);
-}
-
-function getPlayersRef(roomCode) {
-  return ref(db, `rooms/${roomCode}/players`);
-}
-
-function getMetaRef(roomCode) {
-  return ref(db, `rooms/${roomCode}/meta`);
-}
-
 function getSystemCountRef() {
   return ref(db, "system/activeRoomCount");
-}
-
-async function decrementActiveRoomCountSafe() {
-  await runTransaction(getSystemCountRef(), (current) => {
-    const safeCurrent = typeof current === "number" ? current : 0;
-    return Math.max(safeCurrent - 1, 0);
-  });
 }
 
 function serializeBoard(board) {
@@ -430,43 +272,14 @@ function applySerializedStateFromRoom(remoteState) {
   state.largestArmyOwner = remoteState.largestArmyOwner ?? null;
   state.winner = remoteState.winner ?? null;
   state.tradeLock = !!remoteState.tradeLock;
-
-  if (state.phase === "setup" && !state.pendingAction) {
-    state.pendingAction = { type: "buildSettlement", free: true, source: "setup" };
-  }
 }
 
 function getOrderedRoomPlayers(roomData) {
   return Object.values(roomData?.players || {}).sort((a, b) => (a.seat ?? 99) - (b.seat ?? 99));
 }
 
-function getOnlineCurrentTurnIndex() {
-  const roomTurn = currentRoomData?.gameState?.currentPlayer;
-  if (Number.isInteger(roomTurn)) return roomTurn;
-  return Number.isInteger(state.currentPlayer) ? state.currentPlayer : 0;
-}
-
 function getCurrentTurnUid() {
-  const turnIndex = getOnlineCurrentTurnIndex();
-  const directUid = currentRoomData?.meta?.seatUidOrder?.[turnIndex];
-  if (directUid) return directUid;
-
-  const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
-  return orderedPlayers[turnIndex]?.uid || null;
-}
-
-function getOnlineCurrentTurnName() {
-  const turnIndex = getOnlineCurrentTurnIndex();
-  const directUid = currentRoomData?.meta?.seatUidOrder?.[turnIndex];
-  if (directUid && currentRoomData?.players?.[directUid]?.name) {
-    return currentRoomData.players[directUid].name;
-  }
-
-  const roomPlayerName = currentRoomData?.gameState?.players?.[turnIndex]?.name;
-  if (roomPlayerName) return roomPlayerName;
-
-  const orderedPlayers = getOrderedRoomPlayers(currentRoomData);
-  return orderedPlayers[turnIndex]?.name || '-';
+  return currentRoomData?.meta?.seatUidOrder?.[state.currentPlayer] || null;
 }
 
 function isMyTurnOnline() {
@@ -479,57 +292,10 @@ function isRoomHost() {
   return !!(currentRoomData?.meta?.hostUid && firebaseUser && currentRoomData.meta.hostUid === firebaseUser.uid);
 }
 
-async function cleanupRoomPresence(roomCode, roomData) {
-  if (!roomCode || !roomData) return;
-
-  const playersObj = roomData.players || {};
-  const players = Object.values(playersObj);
-
-  // No players left at all -> delete room
-  if (!players.length) {
-    await remove(getRoomRef(roomCode));
-    await decrementActiveRoomCountSafe();
-    return;
-  }
-
-  const connectedPlayers = players
-    .filter(player => player && player.connected)
-    .sort((a, b) => (a.seat ?? 999) - (b.seat ?? 999));
-
-  // Everyone disconnected -> delete room
-  if (connectedPlayers.length === 0) {
-    await remove(getRoomRef(roomCode));
-    await decrementActiveRoomCountSafe();
-    return;
-  }
-
-  const currentHostUid = roomData.meta?.hostUid;
-  const hostStillConnected = connectedPlayers.some(player => player.uid === currentHostUid);
-
-  // If host is gone but players remain, promote next connected player
-  if (!hostStillConnected) {
-    const newHost = connectedPlayers[0];
-    if (newHost?.uid && newHost.uid !== currentHostUid) {
-      await update(getMetaRef(roomCode), {
-        hostUid: newHost.uid,
-        updatedAt: Date.now()
-      });
-    }
-  }
-}
-
 function updateRoomPanel() {
   els.roomCodeDisplay.textContent = currentRoomCode || "-";
   els.roomStatusDisplay.textContent = currentRoomData?.meta?.status || "Offline";
   els.leaveRoomBtn.disabled = !currentRoomCode;
-
-  if (els.onlineCurrentTurnDisplay) {
-    if (currentRoomData?.meta?.status === "playing" && currentRoomData?.gameState) {
-      els.onlineCurrentTurnDisplay.textContent = getOnlineCurrentTurnName();
-    } else {
-      els.onlineCurrentTurnDisplay.textContent = "-";
-    }
-  }
 
   const inOnlineRoom = !!currentRoomCode;
   const roomStatus = currentRoomData?.meta?.status || "Offline";
@@ -547,6 +313,7 @@ function updateRoomPanel() {
 
   els.startOnlineMatchBtn.disabled = !canStart;
 
+
   if (inOnlineRoom) {
     if (isRoomHost() && roomStatus === "lobby") {
       els.newGameBtn.textContent = "Online Room Active";
@@ -557,7 +324,11 @@ function updateRoomPanel() {
     els.newGameBtn.textContent = "New Game";
   }
 
-  els.newGameBtn.style.display = inOnlineRoom ? "none" : "";
+  if (inOnlineRoom) {
+    els.newGameBtn.style.display = "none";
+  } else {
+    els.newGameBtn.style.display = "";
+  }
 
   const players = getOrderedRoomPlayers(currentRoomData);
 
@@ -566,19 +337,16 @@ function updateRoomPanel() {
     return;
   }
 
-  const turnIndex = getOnlineCurrentTurnIndex();
-
-  els.onlinePlayersList.innerHTML = players.map((player, index) => {
+  els.onlinePlayersList.innerHTML = players.map(player => {
     const isYou = firebaseUser && player.uid === firebaseUser.uid;
     const connectionClass = player.connected ? "connected" : "disconnected";
     const connectionText = player.connected ? "Connected" : "Offline";
-    const isCurrentTurn = currentRoomData?.meta?.status === "playing" && index === turnIndex;
 
     return `
       <div class="online-player-row">
         <div class="online-player-dot" style="background:${player.color}"></div>
         <div>
-          <div><strong>${escapeHtml(player.name)}</strong> ${isYou ? `<span class="online-player-you">(You)</span>` : ""} ${isCurrentTurn ? `<span class="online-player-you">• TURN</span>` : ""}</div>
+          <div><strong>${escapeHtml(player.name)}</strong> ${isYou ? `<span class="online-player-you">(You)</span>` : ""}</div>
           <div class="online-player-tag">Seat ${player.seat + 1}</div>
         </div>
         <div class="room-pill ${connectionClass}">${connectionText}</div>
@@ -619,28 +387,27 @@ async function subscribeToRoom(roomCode) {
 
   const roomRef = getRoomRef(roomCode);
 
-  currentRoomUnsubscribe = onValue(roomRef, async (snapshot) => {
+  currentRoomUnsubscribe = onValue(roomRef, (snapshot) => {
     const roomData = snapshot.val();
 
     if (!roomData) {
       currentRoomData = null;
       currentRoomCode = null;
       localStorage.removeItem("catanCurrentRoomCode");
-      clearCurrentRoomSession();
       updateRoomPanel();
       return;
     }
 
     currentRoomData = roomData;
+    updateRoomPanel();
 
     if (roomData.gameState) {
       suppressRoomSync = true;
       applySerializedStateFromRoom(roomData.gameState);
+      render();
       suppressRoomSync = false;
     }
 
-    updateRoomPanel();
-    render();
     setLobbyStatusMessage(roomData);
   });
 
@@ -648,37 +415,14 @@ async function subscribeToRoom(roomCode) {
 }
 
 async function markPresenceConnected(roomCode) {
-  if (!firebaseUser || !roomCode) return;
+  if (!firebaseUser) return;
 
-  const playerRef = getPlayerRef(roomCode, firebaseUser.uid);
-  const snapshot = await get(playerRef);
-
-  if (!snapshot.exists()) return;
-
-  const playerData = snapshot.val();
-  const savedSessionToken = currentRoomSessionToken || loadCurrentRoomSession();
-
-  if (!savedSessionToken) return;
-  if (playerData.sessionToken !== savedSessionToken) return;
-
-  await update(playerRef, {
-    connected: true,
-    lastSeenAt: Date.now()
-  });
-
-  onDisconnect(playerRef).update({
-    connected: false,
-    lastSeenAt: Date.now()
-  });
+  const connectedRef = ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}/connected`);
+  await set(connectedRef, true);
+  onDisconnect(connectedRef).set(false);
 }
 
 async function createRoom() {
-
-  if (!db || !auth) {
-    alertMsg("Online mode is currently unavailable. Local mode should still work.");
-    return;
-  }
-
   const nickname = getNickname();
   if (!nickname) return;
   if (!firebaseUser) {
@@ -711,20 +455,13 @@ async function createRoom() {
 
     if (!existing.exists()) {
       roomCode = candidate;
-      const sessionToken = generateSessionToken();
-      setCurrentRoomSession(sessionToken);
-
-      const clientId = getClientId();
-
       const playerData = {
         uid: firebaseUser.uid,
-        clientId,
         name: nickname,
         seat: 0,
         color: PLAYER_COLORS[0],
         connected: true,
-        joinedAt: Date.now(),
-        sessionToken
+        joinedAt: Date.now()
       };
 
       await set(roomRef, {
@@ -759,12 +496,6 @@ async function createRoom() {
 }
 
 async function joinRoom() {
-
-  if (!db || !auth) {
-    alertMsg("Online mode is currently unavailable. Local mode should still work.");
-    return;
-  }
-
   const nickname = getNickname();
   if (!nickname) return;
   if (!firebaseUser) {
@@ -791,43 +522,26 @@ async function joinRoom() {
   }
 
   const roomData = snapshot.val();
-  const roomStatus = roomData.meta?.status;
-  const clientId = getClientId();
 
-  if (roomStatus !== "lobby" && roomStatus !== "playing") {
-    alertMsg("That room is no longer available.");
+  if (roomData.meta?.status !== "lobby") {
+    alertMsg("That room is no longer in the lobby.");
     return;
   }
 
   const players = getOrderedRoomPlayers(roomData);
   const existingPlayer = roomData.players?.[firebaseUser.uid];
-  const existingByClient = findRoomPlayerByClientId(roomData, clientId);
 
-  if (!existingPlayer && !existingByClient && players.length >= 4) {
+  if (!existingPlayer && players.length >= 4) {
     alertMsg("That room already has 4 players.");
     return;
   }
 
   if (existingPlayer) {
-    const sessionToken = generateSessionToken();
-    setCurrentRoomSession(sessionToken);
-
     await update(ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}`), {
-      name: nickname,
-      connected: true,
-      sessionToken
-    });
-  } else if (existingByClient) {
-    await reclaimRoomSeatIfNeeded(roomCode, roomData);
-    await update(ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}`), {
-      clientId,
       name: nickname,
       connected: true
     });
   } else {
-    const sessionToken = generateSessionToken();
-    setCurrentRoomSession(sessionToken);
-
     const nextSeat = players.length;
     await set(ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}`), {
       uid: firebaseUser.uid,
@@ -835,8 +549,7 @@ async function joinRoom() {
       seat: nextSeat,
       color: PLAYER_COLORS[nextSeat],
       connected: true,
-      joinedAt: Date.now(),
-      sessionToken
+      joinedAt: Date.now()
     });
   }
 
@@ -845,51 +558,31 @@ async function joinRoom() {
 }
 
 async function leaveRoom() {
-
-  if (!db || !auth) {
-    alertMsg("Online mode is currently unavailable. Local mode should still work.");
-    return;
-  }
-
   if (!currentRoomCode || !firebaseUser) return;
 
   const roomCode = currentRoomCode;
   const wasHost = isRoomHost();
-  const playerRef = getPlayerRef(roomCode, firebaseUser.uid);
 
   if (currentRoomUnsubscribe) {
     currentRoomUnsubscribe();
     currentRoomUnsubscribe = null;
   }
 
-  try {
-    await onDisconnect(playerRef).cancel();
-  } catch (e) {
-    console.warn("Could not cancel onDisconnect for player:", e);
-  }
-
   if (wasHost) {
     await remove(getRoomRef(roomCode));
     await runTransaction(getSystemCountRef(), (current) => Math.max((current || 1) - 1, 0));
   } else {
-    await remove(playerRef);
+    await remove(ref(db, `rooms/${roomCode}/players/${firebaseUser.uid}`));
   }
 
   currentRoomCode = null;
   currentRoomData = null;
   localStorage.removeItem("catanCurrentRoomCode");
-  clearCurrentRoomSession();
   updateRoomPanel();
   setStatus("You left the online room.");
 }
 
 async function startOnlineMatch() {
-
-  if (!db || !auth) {
-    alertMsg("Online mode is currently unavailable. Local mode should still work.");
-    return;
-  }
-
   if (!currentRoomCode || !currentRoomData) {
     alertMsg("Create or join a room first.");
     return;
@@ -905,41 +598,18 @@ async function startOnlineMatch() {
     return;
   }
 
-  const orderedPlayers = getOrderedRoomPlayers(currentRoomData)
-    .filter(player => player.connected)
-    .sort((a, b) => (a.seat ?? 99) - (b.seat ?? 99));
+  const orderedPlayers = getOrderedRoomPlayers(currentRoomData).filter(player => player.connected);
 
   if (orderedPlayers.length < 2) {
     alertMsg("You need at least 2 connected players to start.");
     return;
   }
 
-  const seatUidOrder = orderedPlayers.map(player => player.uid);
-
   startNewGame({
     players: orderedPlayers.map(player => ({ name: player.name }))
   });
 
-  state.startPlayer = 0;
-  state.currentPlayer = 0;
-  state.setupRound = 1;
-  state.setupDirection = 1;
-  state.setupOrderIndex = 0;
-  state.pendingAction = { type: "buildSettlement", free: true, source: "setup" };
-  state.phase = "setup";
-  setStatus(`${playerName(state.currentPlayer)}: place your first settlement.`);
-
-  currentRoomData = {
-    ...(currentRoomData || {}),
-    meta: {
-      ...(currentRoomData?.meta || {}),
-      status: "playing",
-      updatedAt: Date.now(),
-      seatUidOrder
-    }
-  };
-
-  render();
+  const seatUidOrder = orderedPlayers.map(player => player.uid);
 
   await update(getRoomRef(currentRoomCode), {
     "meta/status": "playing",
@@ -947,19 +617,15 @@ async function startOnlineMatch() {
     "meta/seatUidOrder": seatUidOrder,
     gameState: serializeStateForRoom()
   });
-
-  await syncRoomStateNow(true);
-  render();
 }
 
-async function syncRoomStateNow(force = false) {
+async function syncRoomStateNow() {
   if (suppressRoomSync) return;
   if (!currentRoomCode) return;
   if (!currentRoomData) return;
   if (currentRoomData.meta?.status !== "playing") return;
   if (!firebaseUser) return;
-
-  if (!force && !isMyTurnOnline()) return;
+  if (!isMyTurnOnline()) return;
 
   await update(getRoomRef(currentRoomCode), {
     "meta/updatedAt": Date.now(),
@@ -967,18 +633,17 @@ async function syncRoomStateNow(force = false) {
   });
 }
 
-function scheduleRoomStateSync(force = false) {
+function scheduleRoomStateSync() {
   if (suppressRoomSync) return;
   if (!currentRoomCode) return;
   if (!currentRoomData) return;
   if (currentRoomData.meta?.status !== "playing") return;
   if (!firebaseUser) return;
-
-  if (!force && !isMyTurnOnline()) return;
+  if (!isMyTurnOnline()) return;
 
   clearTimeout(roomSyncTimer);
   roomSyncTimer = setTimeout(() => {
-    syncRoomStateNow(force).catch((error) => {
+    syncRoomStateNow().catch((error) => {
       console.error("Failed to sync room state:", error);
     });
   }, 60);
@@ -1514,7 +1179,7 @@ function renderBoard() {
     }
 
     const hit = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-    hit.setAttribute("cx", v.x); hit.setAttribute("cy", v.y); hit.setAttribute("r", 18);
+    hit.setAttribute("cx", v.x); hit.setAttribute("cy", v.y); hit.setAttribute("r", 12);
     let vertexClass = "vertex";
     if (canInteractOnline && state.pendingAction?.type === "buildSettlement") {
       vertexClass += validSettlementSpot(v.id, state.currentPlayer, state.phase === "setup") ? " vertex-active" : " vertex-disabled";
@@ -1540,57 +1205,32 @@ function renderBoard() {
 
 function renderSidebar() {
   const p = currentPlayer();
-
-  els.phaseLabel.textContent =
-    state.phase === "setup" ? `Setup Round ${state.setupRound}` : capitalize(state.phase);
+  els.phaseLabel.textContent = state.phase === "setup" ? `Setup Round ${state.setupRound}` : capitalize(state.phase);
+  els.turnLabel.textContent = state.gameStarted ? `• ${p.name}` : "";
+  els.diceResult.textContent = state.dice ? `${state.dice[0]} + ${state.dice[1]} = ${state.dice[0] + state.dice[1]}` : "-";
 
   if (!p) {
-    els.turnLabel.textContent = "";
-    els.diceResult.textContent = state.dice
-      ? `${state.dice[0]} + ${state.dice[1]} = ${state.dice[0] + state.dice[1]}`
-      : "-";
     els.currentPlayerCard.innerHTML = "";
     els.vpSummary.innerHTML = "";
     els.devSummary.innerHTML = "";
     return;
   }
 
-  const visibleTurnName = currentRoomCode ? getOnlineCurrentTurnName() : p.name;
-  els.turnLabel.textContent = state.gameStarted ? `• ${visibleTurnName}` : "";
-  els.diceResult.textContent = state.dice
-    ? `${state.dice[0]} + ${state.dice[1]} = ${state.dice[0] + state.dice[1]}`
-    : "-";
-
-  if (currentRoomCode) {
-    els.currentPlayerCard.innerHTML = `
-      <div class="player-card">
-        <div class="player-dot" style="background:${p.color}"></div>
-        <div>
-          <div><strong>${escapeHtml(visibleTurnName)}</strong></div>
-          <div class="cost-row">
-            <span class="badge">Roads left: ${p.roadsLeft}</span>
-            <span class="badge">Settlements left: ${p.settlementsLeft}</span>
-            <span class="badge">Cities left: ${p.citiesLeft}</span>
-          </div>
+  els.currentPlayerCard.innerHTML = `
+    <div class="player-card">
+      <div class="player-dot" style="background:${p.color}"></div>
+      <div>
+        <div><strong>${escapeHtml(p.name)}</strong></div>
+        <div class="resource-row">
+          ${RESOURCES.map(r => `<span class="badge">${capitalize(r)}: ${p.resources[r]}</span>`).join("")}
         </div>
-      </div>`;
-  } else {
-    els.currentPlayerCard.innerHTML = `
-      <div class="player-card">
-        <div class="player-dot" style="background:${p.color}"></div>
-        <div>
-          <div><strong>${escapeHtml(p.name)}</strong></div>
-          <div class="resource-row">
-            ${RESOURCES.map(r => `<span class="badge">${capitalize(r)}: ${p.resources[r]}</span>`).join("")}
-          </div>
-          <div class="cost-row">
-            <span class="badge">Roads left: ${p.roadsLeft}</span>
-            <span class="badge">Settlements left: ${p.settlementsLeft}</span>
-            <span class="badge">Cities left: ${p.citiesLeft}</span>
-          </div>
+        <div class="cost-row">
+          <span class="badge">Roads left: ${p.roadsLeft}</span>
+          <span class="badge">Settlements left: ${p.settlementsLeft}</span>
+          <span class="badge">Cities left: ${p.citiesLeft}</span>
         </div>
-      </div>`;
-  }
+      </div>
+    </div>`;
 
   const stats = state.players.map((pl, idx) => {
     const vps = computeVictoryPoints(idx);
@@ -1668,18 +1308,9 @@ function attemptBuildSettlement(vertexId) {
   const player = currentPlayer();
   const free = !!state.pendingAction?.free;
   const setup = state.phase === "setup";
-
-  if (currentRoomCode && !isMyTurnOnline()) {
-    return alertMsg("It is not your turn.");
-  }
-
   if (player.settlementsLeft <= 0) return alertMsg("No settlements left.");
-  if (!validSettlementSpot(vertexId, player.id, setup)) {
-    return alertMsg("Settlement cannot be built there. Check the distance rule and connection rule.");
-  }
-  if (!free && !canAfford(player, BUILD_COSTS.settlement)) {
-    return alertMsg("Not enough resources for a settlement.");
-  }
+  if (!validSettlementSpot(vertexId, player.id, setup)) return alertMsg("Settlement cannot be built there. Check the distance rule and connection rule.");
+  if (!free && !canAfford(player, BUILD_COSTS.settlement)) return alertMsg("Not enough resources for a settlement.");
 
   if (!free) payCost(player, BUILD_COSTS.settlement);
   placeSettlement(player.id, vertexId);
@@ -1691,14 +1322,7 @@ function attemptBuildSettlement(vertexId) {
     state.pendingAction = null;
     setStatus(`${player.name} built a settlement.`);
   }
-
   finishAfterAction();
-
-  if (currentRoomCode) {
-    syncRoomStateNow(true).catch((error) => {
-      console.error("Failed to sync settlement action:", error);
-    });
-  }
 }
 
 function placeSettlement(playerId, vertexId) {
@@ -1714,17 +1338,9 @@ function placeSettlement(playerId, vertexId) {
 function attemptBuildCity(vertexId) {
   const player = currentPlayer();
   const vertex = state.board.vertices[vertexId];
-
-  if (currentRoomCode && !isMyTurnOnline()) {
-    return alertMsg("It is not your turn.");
-  }
-
-  if (!vertex.building || vertex.building.owner !== player.id || vertex.building.type !== "settlement") {
-    return alertMsg("You can only upgrade your own settlement to a city.");
-  }
+  if (!vertex.building || vertex.building.owner !== player.id || vertex.building.type !== "settlement") return alertMsg("You can only upgrade your own settlement to a city.");
   if (player.citiesLeft <= 0) return alertMsg("No cities left.");
   if (!canAfford(player, BUILD_COSTS.city)) return alertMsg("Not enough resources for a city.");
-
   payCost(player, BUILD_COSTS.city);
   vertex.building.type = "city";
   player.cities.push(vertexId);
@@ -1733,14 +1349,7 @@ function attemptBuildCity(vertexId) {
   player.settlementsLeft++;
   addLog(`${player.name} upgraded a settlement to a city.`);
   state.pendingAction = null;
-
   finishAfterAction();
-
-  if (currentRoomCode) {
-    syncRoomStateNow(true).catch((error) => {
-      console.error("Failed to sync city action:", error);
-    });
-  }
 }
 
 function validRoadSpot(edgeId, playerId) {
@@ -1760,21 +1369,10 @@ function validRoadSpot(edgeId, playerId) {
 function attemptBuildRoad(edgeId) {
   const player = currentPlayer();
   const free = !!state.pendingAction?.free;
-
-  if (currentRoomCode && !isMyTurnOnline()) {
-    return alertMsg("It is not your turn.");
-  }
-
   if (player.roadsLeft <= 0) return alertMsg("No roads left.");
-  if (!validRoadSpot(edgeId, player.id)) {
-    return alertMsg("Road must connect to your network or the setup settlement.");
-  }
-  if (!free && !canAfford(player, BUILD_COSTS.road)) {
-    return alertMsg("Not enough resources for a road.");
-  }
-
+  if (!validRoadSpot(edgeId, player.id)) return alertMsg("Road must connect to your network or the setup settlement.");
+  if (!free && !canAfford(player, BUILD_COSTS.road)) return alertMsg("Not enough resources for a road.");
   if (!free) payCost(player, BUILD_COSTS.road);
-
   const edge = state.board.edges[edgeId];
   edge.owner = player.id;
   player.roads.push(edgeId);
@@ -1794,15 +1392,8 @@ function attemptBuildRoad(edgeId) {
   } else {
     state.pendingAction = null;
   }
-
   updateSpecialAwards();
   finishAfterAction();
-
-  if (currentRoomCode) {
-    syncRoomStateNow(true).catch((error) => {
-      console.error("Failed to sync road action:", error);
-    });
-  }
 }
 
 function handleSetupAdvance() {
@@ -1867,32 +1458,19 @@ function finishAfterAction() {
 }
 
 function attemptRollDice() {
-  if (currentRoomCode && !isMyTurnOnline()) {
-    return alertMsg("It is not your turn.");
-  }
-
   if (state.phase !== "play" || state.diceRolled || state.pendingAction) return;
-
   const d1 = randInt(1,6), d2 = randInt(1,6);
   state.dice = [d1,d2];
   state.diceRolled = true;
   const total = d1 + d2;
   addLog(`${currentPlayer().name} rolled ${total}.`);
-
   if (total === 7) {
     handleSevenRolled();
   } else {
     distributeResources(total);
     setStatus(`${currentPlayer().name}: you may trade, build, play 1 development card, or end your turn.`);
   }
-
   render();
-
-  if (currentRoomCode) {
-    syncRoomStateNow(true).catch((error) => {
-      console.error("Failed to sync dice roll:", error);
-    });
-  }
 }
 
 function distributeResources(total) {
@@ -2307,31 +1885,18 @@ function openTransferModal() {
 }
 
 function endTurn() {
-  if (currentRoomCode && !isMyTurnOnline()) {
-    return alertMsg("It is not your turn.");
-  }
-
   if (state.phase !== "play" || !state.diceRolled || state.pendingAction || state.tradeLock) return;
-
   const p = currentPlayer();
   p.devCards.push(...p.newDevCards);
   p.newDevCards = [];
   p.playedDevThisTurn = false;
-
   state.currentPlayer = (state.currentPlayer + 1) % state.players.length;
   state.diceRolled = false;
   state.dice = null;
   state.pendingAction = null;
-
   setStatus(`${currentPlayer().name}: roll the dice.`);
   addLog(`It is now ${currentPlayer().name}'s turn.`);
   render();
-
-  if (currentRoomCode) {
-    syncRoomStateNow(true).catch((error) => {
-      console.error("Failed to sync end turn:", error);
-    });
-  }
 }
 
 function openDiscardModal(playerId, amount, done) {
@@ -2549,5 +2114,6 @@ function bindEvents() {
 
 
 bindEvents();
+openHelp();
 render();
 bootstrapFirebase();
