@@ -471,7 +471,10 @@ input, select {
 }
 
 #buildingCostsOverlay:hover {
+  opacity: 1;
   width: 600px;
+  background: rgba(11, 18, 32, 0.88);
+  border-radius: 10px;
 }
 
 /* ── Resource overlay (bottom-right of board) ──────────────────────────────── */
