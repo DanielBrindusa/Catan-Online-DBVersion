@@ -169,6 +169,7 @@ const els = {
   helpBtn: document.getElementById("helpBtn"),
   devSummary: document.getElementById("devSummary"),
 
+  buildCostsBtn: document.getElementById("buildCostsBtn"),
   nicknameInput: document.getElementById("nicknameInput"),
   createRoomBtn: document.getElementById("createRoomBtn"),
   leaveRoomBtn: document.getElementById("leaveRoomBtn"),
@@ -2113,6 +2114,14 @@ function alertMsg(msg) {
   openModal({ title: "Notice", body: `<div class="notice error">${escapeHtml(msg)}</div>`, actions: [{ label: "OK", onClick: closeModal }] });
 }
 
+function openBuildCosts() {
+  openModal({
+    title: "Building Costs",
+    body: `<img src="assets/BuildingCard.png" alt="Building costs reference card" class="costs-modal-img" />`,
+    actions: [{ label: "Close", className: "secondary", onClick: closeModal }]
+  });
+}
+
 function openHelp() {
   openModal({
     title: "Rules & Controls",
@@ -2211,6 +2220,7 @@ function bindEvents() {
     render();
   });
 
+  els.buildCostsBtn.addEventListener("click", openBuildCosts);
   els.createRoomBtn.addEventListener("click", createRoom);
   els.joinRoomBtn.addEventListener("click", joinRoom);
   els.leaveRoomBtn.addEventListener("click", leaveRoom);

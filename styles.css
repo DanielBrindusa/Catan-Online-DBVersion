@@ -436,3 +436,23 @@ input, select {
 .room-pill.disconnected {
   color: #fca5a5;
 }
+.panel-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 0 0 12px;
+}
+.panel-heading h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.costs-btn {
+  padding: 5px 10px;
+  font-size: 12px;
+  border-radius: 8px;
+}
+.costs-modal-img {
+  width: 100%;
+  border-radius: 10px;
+  display: block;
+}
