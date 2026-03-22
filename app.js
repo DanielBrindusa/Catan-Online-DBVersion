@@ -168,6 +168,7 @@ const els = {
   newGameBtn: document.getElementById("newGameBtn"),
   helpBtn: document.getElementById("helpBtn"),
   devSummary: document.getElementById("devSummary"),
+  resourcesOverlay: document.getElementById("resourcesOverlay"),
 
   nicknameInput: document.getElementById("nicknameInput"),
   createRoomBtn: document.getElementById("createRoomBtn"),
@@ -1374,6 +1375,15 @@ function renderBoard() {
   });
 }
 
+// Maps each resource key to its PNG filename in assets/
+const RESOURCE_ICONS = {
+  wood:  "log.png",
+  brick: "brick.png",
+  sheep: "wool.png",
+  wheat: "grain.png",
+  ore:   "ore.png"
+};
+
 function renderSidebar() {
   const p = currentPlayer();
   els.phaseLabel.textContent = state.phase === "setup" ? `Setup Round ${state.setupRound}` : capitalize(state.phase);
@@ -1384,17 +1394,16 @@ function renderSidebar() {
     els.currentPlayerCard.innerHTML = "";
     els.vpSummary.innerHTML = "";
     els.devSummary.innerHTML = "";
+    els.resourcesOverlay.innerHTML = "";
     return;
   }
 
+  // ── Sidebar: player name + pieces left (no resources here anymore) ──────────
   els.currentPlayerCard.innerHTML = `
     <div class="player-card">
       <div class="player-dot" style="background:${p.color}"></div>
       <div>
         <div><strong>${escapeHtml(p.name)}</strong></div>
-        <div class="resource-row">
-          ${RESOURCES.map(r => `<span class="badge">${capitalize(r)}: ${p.resources[r]}</span>`).join("")}
-        </div>
         <div class="cost-row">
           <span class="badge">Roads left: ${p.roadsLeft}</span>
           <span class="badge">Settlements left: ${p.settlementsLeft}</span>
@@ -1402,6 +1411,24 @@ function renderSidebar() {
         </div>
       </div>
     </div>`;
+
+  // ── Board overlay: resource icons with counts ────────────────────────────────
+  if (state.gameStarted) {
+    els.resourcesOverlay.innerHTML = `
+      <div class="res-overlay-name">
+        <span class="res-overlay-dot" style="background:${p.color}"></span>
+        ${escapeHtml(p.name)}
+      </div>
+      <div class="res-overlay-grid">
+        ${RESOURCES.map(r => `
+          <div class="res-tile ${p.resources[r] === 0 ? "res-tile-zero" : ""}">
+            <img src="assets/${RESOURCE_ICONS[r]}" alt="${r}" class="res-icon" />
+            <span class="res-count">${p.resources[r]}</span>
+          </div>`).join("")}
+      </div>`;
+  } else {
+    els.resourcesOverlay.innerHTML = "";
+  }
 
   const stats = state.players.map((pl, idx) => {
     const vps = computeVictoryPoints(idx);
