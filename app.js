@@ -294,6 +294,10 @@ function getMetaRef(roomCode) {
   return ref(db, `rooms/${roomCode}/meta`);
 }
 
+function getSystemCountRef() {
+  return ref(db, "system/activeRoomCount");
+}
+
 async function decrementActiveRoomCountSafe() {
   await runTransaction(getSystemCountRef(), (current) => {
     const safeCurrent = typeof current === "number" ? current : 0;
@@ -663,8 +667,11 @@ async function createRoom() {
       const sessionToken = generateSessionToken();
       setCurrentRoomSession(sessionToken);
 
+      const clientId = getClientId();
+
       const playerData = {
         uid: firebaseUser.uid,
+        clientId,
         name: nickname,
         seat: 0,
         color: PLAYER_COLORS[0],
@@ -672,10 +679,6 @@ async function createRoom() {
         joinedAt: Date.now(),
         sessionToken
       };
-
-      if (!localStorage.getItem("catanClientId")) {
-        localStorage.setItem("catanClientId", playerData.clientId);
-      }
 
       await set(roomRef, {
         meta: {
