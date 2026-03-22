@@ -76,6 +76,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
   padding: 8px 6px;
 }
 #boardContainer {
+  position: relative;
   width: 100%;
   overflow: auto;
   border-radius: 14px;
@@ -455,4 +456,21 @@ input, select {
   width: 100%;
   border-radius: 10px;
   display: block;
+}
+
+#buildingCostsOverlay {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  width: 180px;
+  border-radius: 10px;
+  opacity: 0.92;
+  pointer-events: none;
+  filter: drop-shadow(0 4px 12px rgba(0,0,0,0.7));
+  transition: opacity 0.2s, width 0.2s;
+  z-index: 10;
+}
+#buildingCostsOverlay:hover {
+  opacity: 1;
+  width: 260px;
 }

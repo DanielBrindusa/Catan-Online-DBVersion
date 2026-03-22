@@ -33,6 +33,12 @@
         </div>
         <div id="boardContainer">
           <svg id="board" viewBox="0 0 1000 820" aria-label="Game board"></svg>
+          <img
+            src="assets/BuildingCard.png"
+            alt="Building costs reference"
+            id="buildingCostsOverlay"
+            title="Building Costs"
+          />
         </div>
         <div class="board-footer">
           <div id="statusMessage">Start a new game to begin.</div>
@@ -90,10 +96,7 @@
         </section>
 
         <section class="card panel">
-          <div class="panel-heading">
-            <h2>Build</h2>
-            <button id="buildCostsBtn" class="secondary costs-btn" title="View building costs">Costs 📋</button>
-          </div>
+          <h2>Build</h2>
           <div class="action-grid">
             <button data-action="buildRoad">Road</button>
             <button data-action="buildSettlement">Settlement</button>
