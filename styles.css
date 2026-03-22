@@ -471,6 +471,10 @@ input, select {
   z-index: 10;
 }
 
+#buildingCostsOverlay:hover {
+  width: 260px;
+}
+
 /* ── Resource overlay (bottom-right of board) ──────────────────────────────── */
 #resourcesOverlay {
   position: absolute;
