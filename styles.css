@@ -460,9 +460,9 @@ input, select {
 
 #buildingCostsOverlay {
   position: absolute;
-  bottom: 12px;
-  left: 12px;
-  width: 400px;
+  bottom: 2px;
+  left: 2px;
+  width: 450px;
   border-radius: 10px;
   opacity: 0.92;
   pointer-events: none;
