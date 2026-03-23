@@ -167,6 +167,8 @@ const els = {
   finishActionBtn: document.getElementById("finishActionBtn"),
   newGameBtn: document.getElementById("newGameBtn"),
   helpBtn: document.getElementById("helpBtn"),
+  muteBtn: document.getElementById("muteBtn"),
+  bgMusic: document.getElementById("bgMusic"),
   devSummary: document.getElementById("devSummary"),
   resourcesOverlay: document.getElementById("resourcesOverlay"),
 
@@ -2232,6 +2234,21 @@ function bindEvents() {
   els.endTurnBtn.addEventListener("click", endTurn);
   els.newGameBtn.addEventListener("click", openNewGameModal);
   els.helpBtn.addEventListener("click", openHelp);
+
+  const tryPlay = () => {
+    if (els.bgMusic.paused) {
+      els.bgMusic.play().catch(() => {});
+    }
+    document.removeEventListener("click", tryPlay);
+  };
+  document.addEventListener("click", tryPlay);
+
+  els.muteBtn.addEventListener("click", () => {
+    const muted = !els.bgMusic.muted;
+    els.bgMusic.muted = muted;
+    els.muteBtn.textContent = muted ? "🔇 Music" : "🔊 Music";
+    els.muteBtn.classList.toggle("muted", muted);
+  });
 
   els.finishActionBtn.addEventListener("click", () => {
     state.pendingAction = null;

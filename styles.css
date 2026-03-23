@@ -573,3 +573,11 @@ input, select {
   max-height: 20px;
   opacity: 1;
 }
+
+#muteBtn {
+  min-width: 100px;
+}
+
+#muteBtn.muted {
+  opacity: 0.5;
+}
