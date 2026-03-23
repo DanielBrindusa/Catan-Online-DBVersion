@@ -581,3 +581,33 @@ input, select {
 #muteBtn.muted {
   opacity: 0.5;
 }
+
+/* ── Site footer ───────────────────────────────────────────────────────────── */
+.site-footer {
+  margin: 8px 20px 20px;
+  padding: 14px 20px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  background: rgba(15, 23, 42, 0.6);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.site-footer p {
+  margin: 0;
+  font-size: 11px;
+  color: #475569;
+  line-height: 1.6;
+}
+
+.site-footer a {
+  color: #64748b;
+  text-decoration: none;
+}
+
+.site-footer a:hover {
+  color: #94a3b8;
+  text-decoration: underline;
+}
