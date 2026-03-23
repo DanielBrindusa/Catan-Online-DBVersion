@@ -611,3 +611,9 @@ input, select {
   color: #94a3b8;
   text-decoration: underline;
 }
+
+.disclaimer-tag {
+  margin: 3px 0 0;
+  font-size: 11px;
+  color: #475569;
+}

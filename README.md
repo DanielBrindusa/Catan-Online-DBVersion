@@ -2,6 +2,7 @@
 
 A browser-based board game inspired by the classic island settlement and trading genre, built as a personal learning project. Playable locally on a single device (hot-seat) or online across multiple devices using Firebase Realtime Database.
 
+*First published: July 2025. This project is actively maintained for personal learning purposes.*
 ---
 
 ## Table of Contents
